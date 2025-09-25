@@ -22,6 +22,7 @@ PARSE_MASTER   = os.environ.get("PARSE_MASTER_KEY", "")
 DEFAULT_PREFIX   = os.getenv("PROMO_PREFIX", "AVZ-2DA-")
 DEFAULT_DURATION = os.getenv("PROMO_DURATION", "LIFETIME")
 DEFAULT_PARTNER  = os.getenv("PROMO_PARTNER",  "AVAZ")
+PROMO_NOTIFY_CHANNEL = os.getenv("PROMO_NOTIFY_CHANNEL", "").strip()  # Slack channel ID (e.g., C0123456789)
 
 # Helper: Build Parse REST headers
 def _parse_headers():
@@ -186,6 +187,18 @@ PROMO_VIEW = {
                     {"text": {"type": "plain_text", "text": "ACE"},      "value": "ACE"}
                 ]
             }
+        },
+        {
+            "type": "input",
+            "block_id": "post_channel",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "Post results to channel (optional)"},
+            "element": {
+                "type": "conversations_select",
+                "action_id": "value",
+                "default_to_current_conversation": True
+            },
+            "hint": {"type": "plain_text", "text": "If left blank, results are sent via DM unless invoked from a channel."}
         }
     ]
 }
@@ -209,6 +222,51 @@ def parse_ids(raw: str):
         if identifier not in seen:
             seen[identifier] = True
     return list(seen.keys())
+
+# === Notify helper ===
+def _notify_channel_if_configured(client, notify_channel: str, target: str, prefix: str, duration: str, partner: str, processed_count: int, errors: int, requester_user_id: str) -> None:
+    channel = (notify_channel or "").strip()
+    if not channel:
+        return
+
+    # Best-effort join for public channels (C…)
+    if re.fullmatch(r"C[A-Z0-9]+", channel):
+        try:
+            client.conversations_join(channel=channel)
+        except Exception as e:
+            # Ignore join failures; we'll attempt to post anyway
+            print(f"[notify] conversations_join failed for {channel}: {e}")
+
+    try:
+        requester = f"<@{requester_user_id}>"
+    except Exception:
+        requester = "unknown"
+
+    text = "\n".join([
+        f"*Promo generation completed* by {requester}",
+        f"Channel: <#{target}>",
+        f"Prefix: `{prefix}` · Duration: `{duration}` · Partner: `{partner}`",
+        f"Processed: {processed_count} · Errors: {errors}",
+    ])
+
+    try:
+        client.chat_postMessage(channel=channel, text=text)
+    except Exception as e:
+        # Fall back: DM requester with the error for visibility
+        print(f"[notify] chat_postMessage failed for {channel}: {e}")
+        try:
+            dm = client.conversations_open(users=requester_user_id)
+            dm_channel = dm["channel"]["id"]
+            client.chat_postMessage(
+                channel=dm_channel,
+                text=(
+                    f"Could not post summary to {channel}. "
+                    f"Please invite the bot to that channel (or set a valid channel ID).\n"
+                    f"Error: {e}"
+                ),
+            )
+        except Exception as e2:
+            print(f"[notify] DM fallback failed: {e2}")
 
 # === Bolt App ===
 app = App(token=SLACK_BOT_TOKEN)
@@ -292,8 +350,70 @@ def handle_promo_submit(ack, body, client, view):
     custom_prefix_raw = (vals.get("custom_prefix", {}).get("value", {}).get("value", "")).strip()
     prefix = custom_prefix_raw or prefix_choice
 
-    # Passed validation → proceed
+    # Determine target channel for results
+    post_channel_block = vals.get("post_channel") or {}
+    post_channel_action = post_channel_block.get("value") or {}
+    post_channel_id = (post_channel_action.get("selected_conversation") or "").strip()
+    target_for_results = post_channel_id or (view.get("private_metadata") or "").strip()
+    target_display = f"<#{target_for_results}>" if target_for_results else "DM"
+
+    # Push confirmation modal
+    confirm_view = {
+        "type": "modal",
+        "callback_id": "promo_gui_confirm",
+        "title": {"type": "plain_text", "text": "Confirm Generation"},
+        "submit": {"type": "plain_text", "text": "Confirm"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": json.dumps({
+            "ids": ids,
+            "prefix": prefix,
+            "duration": duration,
+            "partner": partner,
+            "target": target_for_results,
+        }),
+        "blocks": [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "You're about to generate promo codes with the following settings:"}},
+            {"type": "section", "fields": [
+                {"type": "mrkdwn", "text": f"*Prefix*\n`{prefix}`"},
+                {"type": "mrkdwn", "text": f"*Duration*\n`{duration}`"},
+                {"type": "mrkdwn", "text": f"*Partner*\n`{partner}`"},
+                {"type": "mrkdwn", "text": f"*Users*\n{len(ids)}"},
+                {"type": "mrkdwn", "text": f"*Post to*\n{target_display}"},
+            ]},
+            {"type": "divider"},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Press Confirm to proceed or Cancel to go back."}},
+        ],
+    }
+
+    ack({
+        "response_action": "push",
+        "view": confirm_view,
+    })
+
+# Confirmation submit → generate → post results
+@app.view("promo_gui_confirm")
+def handle_promo_confirm(ack, body, client, view):
+    # Close the confirm modal immediately
     ack()
+
+    try:
+        meta_json = view.get("private_metadata") or "{}"
+        data = json.loads(meta_json)
+    except Exception:
+        data = {}
+
+    ids = data.get("ids") or []
+    if isinstance(ids, str):
+        ids = [s for s in re.split(r"\s*,\s*", ids) if s]
+
+    prefix = data.get("prefix", DEFAULT_PREFIX)
+    duration = data.get("duration", DEFAULT_DURATION)
+    partner = data.get("partner", DEFAULT_PARTNER)
+
+    target = data.get("target") or None
+    if not target:
+        dm = client.conversations_open(users=body["user"]["id"])  # returns D… id
+        target = dm["channel"]["id"]
 
     rows, errors = [], 0
     for uid in ids:
@@ -304,13 +424,6 @@ def handle_promo_submit(ack, body, client, view):
             rows.append((uid, f"ERROR: {e}", duration, partner))
             errors += 1
 
-    # Choose where to respond: invoking channel (from private_metadata) or DM fallback
-    target = view.get("private_metadata") or None
-    if not target:
-        dm = client.conversations_open(users=body["user"]["id"])  # returns D… id
-        target = dm["channel"]["id"]
-
-    # Build a formatted list (no CSV upload)
     lines = [f"*Promo results* (prefix={prefix}, duration={duration}, partner={partner})",
              f"Processed: {len(ids)} · Errors: {errors}"]
     for uid, code_or_err, _, _ in rows:
@@ -320,6 +433,19 @@ def handle_promo_submit(ack, body, client, view):
             lines.append(f"• `{uid}` → `{code_or_err}`")
 
     client.chat_postMessage(channel=target, text="\n".join(lines))
+
+    # Optional: also notify a specific channel if configured
+    _notify_channel_if_configured(
+        client=client,
+        notify_channel=PROMO_NOTIFY_CHANNEL,
+        target=target,
+        prefix=prefix,
+        duration=duration,
+        partner=partner,
+        processed_count=len(ids),
+        errors=errors,
+        requester_user_id=body["user"]["id"],
+    )
 
 # --- Optional: Uncomment if you want text commands as well ---
 # @app.command("/promo")
