@@ -173,33 +173,6 @@ PROMO_VIEW = {
                 "placeholder": {"type": "plain_text", "text": "e.g., 45 (overrides Duration if set)"}
             }
         },
-        {
-            "type": "input",
-            "block_id": "partner",
-            "label": {"type": "plain_text", "text": "Distribution Partner"},
-            "element": {
-                "type": "static_select",
-                "action_id": "value",
-                "initial_option": {"text": {"type": "plain_text", "text": DEFAULT_PARTNER}, "value": DEFAULT_PARTNER},
-                "options": [
-                    {"text": {"type": "plain_text", "text": "AVAZ"},     "value": "AVAZ"},
-                    {"text": {"type": "plain_text", "text": "EYE-TECH"}, "value": "EYE-TECH"},
-                    {"text": {"type": "plain_text", "text": "ACE"},      "value": "ACE"}
-                ]
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "post_channel",
-            "optional": True,
-            "label": {"type": "plain_text", "text": "Post results to channel (optional)"},
-            "element": {
-                "type": "conversations_select",
-                "action_id": "value",
-                "default_to_current_conversation": True
-            },
-            "hint": {"type": "plain_text", "text": "If left blank, results are sent via DM unless invoked from a channel."}
-        }
     ]
 }
 
@@ -292,7 +265,10 @@ def open_from_cmd(ack, body, client):
 @app.view("promo_gui_submit")
 def handle_promo_submit(ack, body, client, view):
     vals = view["state"]["values"]
-    raw = vals["users_text"]["value"].get("value", "")
+    # Safely read users input; Slack may send None for empty plain_text_input
+    _users_block = vals.get("users_text") or {}
+    _users_action = _users_block.get("value") or {}
+    raw = _users_action.get("value") or ""
     # If users pasted line-separated entries without commas, show a clear error
     if ("\n" in raw or "\r" in raw) and "," not in raw:
         ack({
@@ -347,7 +323,9 @@ def handle_promo_submit(ack, body, client, view):
 
     # Compute prefix: custom_prefix overrides dropdown if present
     prefix_choice = selected_prefix_opt.get("value", DEFAULT_PREFIX)
-    custom_prefix_raw = (vals.get("custom_prefix", {}).get("value", {}).get("value", "")).strip()
+    _cp_block = vals.get("custom_prefix") or {}
+    _cp_action = _cp_block.get("value") or {}
+    custom_prefix_raw = (_cp_action.get("value") or "").strip()
     prefix = custom_prefix_raw or prefix_choice
 
     # Determine target channel for results
