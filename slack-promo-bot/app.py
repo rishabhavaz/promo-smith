@@ -103,7 +103,7 @@ PROMO_VIEW = {
                 "action_id": "value",
                 "multiline": True,
                 "focus_on_load": True,
-                "placeholder": {"type": "plain_text", "text": "abc@gmail.com, +14155552671, xyz@company.com\na@example.com, +919999999999\n(Comma-separated; wraps to 3 lines)"}
+                "placeholder": {"type": "plain_text", "text": "abc@gmail.com, +14155552671, xyz@company.com"}
             },
             "hint": {"type": "plain_text", "text": "Comma-separated. Field wraps up to 3 lines for readability."}
         },
