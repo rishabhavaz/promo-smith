@@ -376,11 +376,16 @@ def handle_promo_submit(ack, body, client, view):
     target_display = f"<#{target_for_results}>" if target_for_results else "DM"
 
     # Push confirmation modal
+    # Format user list for display
+    user_list_text = "\n".join([f"• `{uid}`" for uid in ids[:20]])  # Show first 20
+    if len(ids) > 20:
+        user_list_text += f"\n_...and {len(ids) - 20} more_"
+    
     confirm_view = {
         "type": "modal",
         "callback_id": "promo_gui_confirm",
         "title": {"type": "plain_text", "text": "Confirm Generation"},
-        "submit": {"type": "plain_text", "text": "Confirm"},
+        "submit": {"type": "plain_text", "text": "✓ Confirm & Generate"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "private_metadata": json.dumps({
             "ids": ids,
@@ -391,17 +396,36 @@ def handle_promo_submit(ack, body, client, view):
             "notes": notes_raw,
         }),
         "blocks": [
-            {"type": "section", "text": {"type": "mrkdwn", "text": "You're about to generate promo codes with the following settings:"}},
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "⚠️ Review Before Confirming", "emoji": True}
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Promo Code Settings*"}
+            },
             {"type": "section", "fields": [
                 {"type": "mrkdwn", "text": f"*Prefix*\n`{prefix}`"},
                 {"type": "mrkdwn", "text": f"*Duration*\n`{duration}`"},
                 {"type": "mrkdwn", "text": f"*Partner*\n`{partner}`"},
-                {"type": "mrkdwn", "text": f"*Users*\n{len(ids)}"},
-                {"type": "mrkdwn", "text": f"*Post to*\n{target_display}"},
+                {"type": "mrkdwn", "text": f"*Post Results To*\n{target_display}"},
             ]},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Notes*\n{notes_raw}"}},
             {"type": "divider"},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "Press Confirm to proceed or Cancel to go back."}},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Reason for Generation*\n{notes_raw}"}
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Users ({len(ids)} total)*\n{user_list_text}"}
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "✅ Press *Confirm & Generate* to create these promo codes\n❌ Press *Cancel* to go back and make changes"}
+            },
         ],
     }
 
