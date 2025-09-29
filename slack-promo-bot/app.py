@@ -23,6 +23,8 @@ DEFAULT_PREFIX   = os.getenv("PROMO_PREFIX", "AVZ-2DA-")
 DEFAULT_DURATION = os.getenv("PROMO_DURATION", "LIFETIME")
 DEFAULT_PARTNER  = os.getenv("PROMO_PARTNER",  "AVAZ")
 PROMO_NOTIFY_CHANNEL = os.getenv("PROMO_NOTIFY_CHANNEL", "").strip()  # Slack channel ID (e.g., C0123456789)
+# Optional: allow the bot to attempt conversations.join when permitted
+ENABLE_CONVERSATIONS_JOIN = os.getenv("ENABLE_CONVERSATIONS_JOIN", "0") == "1"
 
 # Helper: Build Parse REST headers
 def _parse_headers():
@@ -77,10 +79,6 @@ def create_promo_for_user(user_id: str, prefix: str, duration: str, partner: str
             "promoCodeUser": uid,
             "promoCodeDuration": duration,
             "promoCodeDistributionPartner": partner,
-            # Optional fields you can add:
-            # "promoCodeStartDate": "2024-09-06T11:52:13.070701",
-            # "promoCodeEndDate":   "2025-09-06T11:52:13.070701",
-            # "validApplicationIds": ["com.avazapp.autism.en.AvazEverydayBeta"],
         }
         _create_promo_object(payload)
         return code
@@ -173,6 +171,17 @@ PROMO_VIEW = {
                 "placeholder": {"type": "plain_text", "text": "e.g., 45 (overrides Duration if set)"}
             }
         },
+        {
+            "type": "input",
+            "block_id": "notes",
+            "label": {"type": "plain_text", "text": "Notes (reason for promo)"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "value",
+                "multiline": True,
+                "placeholder": {"type": "plain_text", "text": "Why are you creating these promo codes?"}
+            }
+        },
     ]
 }
 
@@ -202,8 +211,8 @@ def _notify_channel_if_configured(client, notify_channel: str, target: str, pref
     if not channel:
         return
 
-    # Best-effort join for public channels (C…)
-    if re.fullmatch(r"C[A-Z0-9]+", channel):
+    # Optional join for public channels (C…) — disabled by default to avoid missing_scope logs
+    if ENABLE_CONVERSATIONS_JOIN and re.fullmatch(r"C[A-Z0-9]+", channel):
         try:
             client.conversations_join(channel=channel)
         except Exception as e:
@@ -250,16 +259,22 @@ app = App(token=SLACK_BOT_TOKEN)
 @app.shortcut("promo_global_shortcut")
 def open_promo_modal(ack, body, client):
     ack()
-    client.views_open(trigger_id=body["trigger_id"], view=PROMO_VIEW)
+    try:
+        client.views_open(trigger_id=body["trigger_id"], view=PROMO_VIEW)
+    except Exception as e:
+        print(f"[open_promo_modal] views_open failed: {e}")
 
 # Slash command → open modal with private_metadata for channel reply routing
 @app.command("/generate-promo")
 def open_from_cmd(ack, body, client):
     ack()
-    client.views_open(
-        trigger_id=body["trigger_id"],
-        view={**PROMO_VIEW, "private_metadata": body.get("channel_id", "")},
-    )
+    try:
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view={**PROMO_VIEW, "private_metadata": body.get("channel_id", "")},
+        )
+    except Exception as e:
+        print(f"[open_from_cmd] views_open failed: {e}")
 
 # Modal submission → validate → generate → DM CSV
 @app.view("promo_gui_submit")
@@ -307,6 +322,16 @@ def handle_promo_submit(ack, body, client, view):
             return
 
     # Passed validation → proceed
+    # Notes are mandatory
+    _notes_block = vals.get("notes") or {}
+    _notes_action = _notes_block.get("value") or {}
+    notes_raw = (_notes_action.get("value") or "").strip()
+    if not notes_raw:
+        ack({
+            "response_action": "errors",
+            "errors": {"notes": "Please provide the reason for these promo codes."}
+        })
+        return
     # Determine selected values
     selected_prefix_opt = (vals.get("prefix", {}).get("value", {}).get("selected_option") or {})
     selected_duration_opt = (vals.get("duration", {}).get("value", {}).get("selected_option") or {})
@@ -348,6 +373,7 @@ def handle_promo_submit(ack, body, client, view):
             "duration": duration,
             "partner": partner,
             "target": target_for_results,
+            "notes": notes_raw,
         }),
         "blocks": [
             {"type": "section", "text": {"type": "mrkdwn", "text": "You're about to generate promo codes with the following settings:"}},
@@ -358,6 +384,7 @@ def handle_promo_submit(ack, body, client, view):
                 {"type": "mrkdwn", "text": f"*Users*\n{len(ids)}"},
                 {"type": "mrkdwn", "text": f"*Post to*\n{target_display}"},
             ]},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Notes*\n{notes_raw}"}},
             {"type": "divider"},
             {"type": "section", "text": {"type": "mrkdwn", "text": "Press Confirm to proceed or Cancel to go back."}},
         ],
@@ -371,8 +398,8 @@ def handle_promo_submit(ack, body, client, view):
 # Confirmation submit → generate → post results
 @app.view("promo_gui_confirm")
 def handle_promo_confirm(ack, body, client, view):
-    # Close the confirm modal immediately
-    ack()
+    # Close the entire modal stack (both confirm and the original modal)
+    ack({"response_action": "clear"})
 
     try:
         meta_json = view.get("private_metadata") or "{}"
@@ -387,6 +414,7 @@ def handle_promo_confirm(ack, body, client, view):
     prefix = data.get("prefix", DEFAULT_PREFIX)
     duration = data.get("duration", DEFAULT_DURATION)
     partner = data.get("partner", DEFAULT_PARTNER)
+    notes = data.get("notes", "")
 
     target = data.get("target") or None
     if not target:
@@ -402,15 +430,26 @@ def handle_promo_confirm(ack, body, client, view):
             rows.append((uid, f"ERROR: {e}", duration, partner))
             errors += 1
 
-    lines = [f"*Promo results* (prefix={prefix}, duration={duration}, partner={partner})",
-             f"Processed: {len(ids)} · Errors: {errors}"]
+    lines = [f"*Promo results* (prefix={prefix}, duration={duration}, partner={partner})"]
+    if notes:
+        lines.append(f"Notes: {notes}")
+    lines.append(f"Processed: {len(ids)} · Errors: {errors}")
     for uid, code_or_err, _, _ in rows:
         if str(code_or_err).startswith("ERROR:"):
             lines.append(f"• `{uid}` → _{code_or_err}_")
         else:
             lines.append(f"• `{uid}` → `{code_or_err}`")
 
-    client.chat_postMessage(channel=target, text="\n".join(lines))
+    try:
+        client.chat_postMessage(channel=target, text="\n".join(lines))
+    except Exception as e:
+        print(f"[results] chat_postMessage failed for {target}: {e}")
+        try:
+            dm = client.conversations_open(users=body["user"]["id"])  # fallback to DM requestor
+            dm_channel = dm["channel"]["id"]
+            client.chat_postMessage(channel=dm_channel, text="\n".join(lines))
+        except Exception as e2:
+            print(f"[results] DM fallback failed: {e2}")
 
     # Optional: also notify a specific channel if configured
     _notify_channel_if_configured(
@@ -424,27 +463,6 @@ def handle_promo_confirm(ack, body, client, view):
         errors=errors,
         requester_user_id=body["user"]["id"],
     )
-
-# --- Optional: Uncomment if you want text commands as well ---
-# @app.command("/promo")
-# def promo_single_cmd(ack, respond, command):
-#     ack()
-#     text = (command.get("text") or "").strip()
-#     if not text:
-#         respond("Usage: /promo user@example.com [prefix=...] [duration=...] [partner=...]")
-#         return
-#     parts = text.split()
-#     uid = parts[0]
-#     prefix = DEFAULT_PREFIX; duration = DEFAULT_DURATION; partner = DEFAULT_PARTNER
-#     for p in parts[1:]:
-#         if p.startswith("prefix="):   prefix = p.split("=",1)[1]
-#         elif p.startswith("duration="): duration = p.split("=",1)[1]
-#         elif p.startswith("partner="):  partner = p.split("=",1)[1]
-#     try:
-#         code = create_promo_for_user(uid, prefix, duration, partner)
-#         respond(f"✅ {code} for {uid} (duration={duration}, partner={partner})")
-#     except Exception as e:
-#         respond(f"❌ Failed: {e}")
 
 if __name__ == "__main__":
     SocketModeHandler(app, SLACK_APP_TOKEN).start()
