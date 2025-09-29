@@ -206,7 +206,7 @@ def parse_ids(raw: str):
     return list(seen.keys())
 
 # === Notify helper ===
-def _notify_channel_if_configured(client, notify_channel: str, target: str, prefix: str, duration: str, partner: str, processed_count: int, errors: int, requester_user_id: str) -> None:
+def _notify_channel_if_configured(client, notify_channel: str, target: str, prefix: str, duration: str, partner: str, processed_count: int, errors: int, requester_user_id: str, notes: str = "", rows: list = None) -> None:
     channel = (notify_channel or "").strip()
     if not channel:
         return
@@ -224,12 +224,27 @@ def _notify_channel_if_configured(client, notify_channel: str, target: str, pref
     except Exception:
         requester = "unknown"
 
-    text = "\n".join([
+    lines = [
         f"*Promo generation completed* by {requester}",
         f"Channel: <#{target}>",
         f"Prefix: `{prefix}` · Duration: `{duration}` · Partner: `{partner}`",
-        f"Processed: {processed_count} · Errors: {errors}",
-    ])
+    ]
+    
+    if notes:
+        lines.append(f"Notes: {notes}")
+    
+    lines.append(f"Processed: {processed_count} · Errors: {errors}")
+    
+    # Add generated promo codes
+    if rows:
+        lines.append("\n*Generated Codes:*")
+        for uid, code_or_err, _, _ in rows:
+            if str(code_or_err).startswith("ERROR:"):
+                lines.append(f"• `{uid}` → _{code_or_err}_")
+            else:
+                lines.append(f"• `{uid}` → `{code_or_err}`")
+    
+    text = "\n".join(lines)
 
     try:
         client.chat_postMessage(channel=channel, text=text)
@@ -462,6 +477,8 @@ def handle_promo_confirm(ack, body, client, view):
         processed_count=len(ids),
         errors=errors,
         requester_user_id=body["user"]["id"],
+        notes=notes,
+        rows=rows,
     )
 
 if __name__ == "__main__":
