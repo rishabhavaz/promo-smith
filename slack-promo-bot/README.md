@@ -39,7 +39,13 @@ SLACK_APP_TOKEN=xapp-...
 PARSE_APP_ID=...
 PARSE_MASTER_KEY=...
 PROMO_NOTIFY_CHANNEL=C...    # Optional
+PROMO_AUTHORIZED_USER_IDS=U0123ABC,U0456DEF  # Optional: restrict who can generate promos
 ```
+
+Notes:
+- To enable access control, set `PROMO_AUTHORIZED_USER_IDS` to a comma-separated list of Slack **member IDs** (start with `U...`).
+- If `PROMO_AUTHORIZED_USER_IDS` is empty/unset, the bot allows all users (current behavior).
+- To find a member ID in Slack: open a user profile → “More” → “Copy member ID”.
 
 ## 💡 Usage
 

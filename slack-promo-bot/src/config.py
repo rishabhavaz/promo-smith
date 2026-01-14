@@ -24,3 +24,10 @@ DEFAULT_PARTNER  = os.getenv("PROMO_PARTNER",  "AVAZ")
 # --- Notification settings ---
 PROMO_NOTIFY_CHANNEL = os.getenv("PROMO_NOTIFY_CHANNEL", "").strip()  # Slack channel ID (e.g., C0123456789)
 ENABLE_CONVERSATIONS_JOIN = os.getenv("ENABLE_CONVERSATIONS_JOIN", "0") == "1"
+
+# --- Authorization / guard rails ---
+# Comma-separated Slack user IDs allowed to generate promos (e.g., "U0123ABC,U0456DEF").
+# If empty/unset, everyone is allowed (backwards compatible). Set this to enable access control.
+PROMO_AUTHORIZED_USER_IDS = {
+    u.strip() for u in os.getenv("PROMO_AUTHORIZED_USER_IDS", "").split(",") if u.strip()
+}

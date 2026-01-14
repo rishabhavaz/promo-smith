@@ -3,7 +3,12 @@ import re
 import json
 from src.config import DEFAULT_PREFIX, DEFAULT_DURATION, DEFAULT_PARTNER, PROMO_NOTIFY_CHANNEL
 from src.utils.validation import parse_user_ids, validate_user_id
-from src.slack_ui.modal_views import build_promo_form_modal, build_confirmation_modal
+from src.utils.authz import get_requester_user_id, is_authorized_slack_user, unauthorized_text
+from src.slack_ui.modal_views import (
+    build_promo_form_modal,
+    build_confirmation_modal,
+    build_access_denied_modal,
+)
 from src.core.promo_generator import create_promo_for_user
 from src.slack_ui.notifications import notify_channel, format_results_message
 
@@ -18,6 +23,21 @@ def handle_open_modal(ack, body, client, private_metadata=""):
         client: Slack client
         private_metadata: Optional metadata to attach to the modal
     """
+    requester_user_id = get_requester_user_id(body)
+    if not is_authorized_slack_user(requester_user_id):
+        # Slash commands can be answered without opening a modal
+        if body.get("command"):
+            ack(unauthorized_text(requester_user_id))
+            return
+
+        # Global shortcuts don't have a channel context → show a modal instead
+        ack()
+        try:
+            client.views_open(trigger_id=body["trigger_id"], view=build_access_denied_modal())
+        except Exception as e:
+            print(f"[handle_open_modal] views_open(access_denied) failed: {e}")
+        return
+
     ack()
     try:
         view = build_promo_form_modal()
@@ -38,6 +58,11 @@ def handle_promo_submit(ack, body, client, view):
         client: Slack client
         view: The submitted view
     """
+    requester_user_id = get_requester_user_id(body)
+    if not is_authorized_slack_user(requester_user_id):
+        ack({"response_action": "update", "view": build_access_denied_modal()})
+        return
+
     vals = view["state"]["values"]
     
     # Extract and validate users input
@@ -146,6 +171,11 @@ def handle_promo_confirm(ack, body, client, view):
         client: Slack client
         view: The confirmation view
     """
+    requester_user_id = get_requester_user_id(body)
+    if not is_authorized_slack_user(requester_user_id):
+        ack({"response_action": "update", "view": build_access_denied_modal()})
+        return
+
     # Close the entire modal stack
     ack({"response_action": "clear"})
 
@@ -168,7 +198,7 @@ def handle_promo_confirm(ack, body, client, view):
     # Determine target for results
     target = data.get("target") or None
     if not target:
-        dm = client.conversations_open(users=body["user"]["id"])
+        dm = client.conversations_open(users=requester_user_id)
         target = dm["channel"]["id"]
 
     # Generate promo codes
@@ -190,7 +220,7 @@ def handle_promo_confirm(ack, body, client, view):
         print(f"[results] chat_postMessage failed for {target}: {e}")
         # Fallback to DM
         try:
-            dm = client.conversations_open(users=body["user"]["id"])
+            dm = client.conversations_open(users=requester_user_id)
             dm_channel = dm["channel"]["id"]
             client.chat_postMessage(channel=dm_channel, text=message)
         except Exception as e2:
@@ -206,7 +236,7 @@ def handle_promo_confirm(ack, body, client, view):
         partner=partner,
         processed_count=len(ids),
         errors=errors,
-        requester_user_id=body["user"]["id"],
+        requester_user_id=requester_user_id,
         notes=notes,
         rows=rows,
     )

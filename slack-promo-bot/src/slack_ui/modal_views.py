@@ -175,3 +175,25 @@ def build_confirmation_modal(ids: list, prefix: str, duration: str, partner: str
             },
         ],
     }
+
+
+def build_access_denied_modal():
+    """A simple modal shown when a user is not authorized to generate promos."""
+    return {
+        "type": "modal",
+        "callback_id": "promo_access_denied",
+        "title": {"type": "plain_text", "text": "Access denied"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*You are not authorized to generate promo codes.*\n\n"
+                        "If you believe this is a mistake, contact the Promo Smith admins."
+                    ),
+                },
+            }
+        ],
+    }
