@@ -345,7 +345,10 @@ def handle_promo_confirm(ack, body, client, view):
                     r for r in all_promo_records
                     if r.get("promoCodeUser", "").lower() == uid.lower()
                 ]
-                action = resolve_extension_action(uid, user_records, duration)
+                till_date = data.get("till_date", "")
+                action = resolve_extension_action(
+                    uid, user_records, duration, requested_end_date=till_date
+                )
 
                 if action["action"] == "bump_device_count":
                     record = action["record"]
@@ -354,7 +357,19 @@ def handle_promo_confirm(ack, body, client, view):
                         "promoCodeDeviceCountLimit": new_limit,
                         "promoCodeUsed": False,
                     })
-                    rows.append((uid, f"UPDATED: {record['promoCodeId']} (devices → {new_limit})", duration, partner))
+                    reason = action.get("reason", "")
+                    code = record.get("promoCodeId", "?")
+                    rows.append((
+                        uid,
+                        f"UPDATED {code} (devices: {new_limit}, reason: {reason})",
+                        duration,
+                        partner,
+                    ))
+
+                elif action["action"] == "skip":
+                    detail = action.get("detail", "limit reached")
+                    rows.append((uid, f"SKIPPED: {detail}", duration, partner))
+
                 else:
                     promo_id = create_promo_for_user(uid, prefix, duration, partner)
                     rows.append((uid, promo_id, duration, partner))

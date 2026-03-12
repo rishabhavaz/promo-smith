@@ -2,7 +2,7 @@
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from src.config import DEFAULT_PREFIX, DEFAULT_DURATION
+from src.config import DEFAULT_PREFIX, DEFAULT_DURATION, AGGREGATE_DEVICE_LIMIT
 from src.utils.duration import duration_to_days
 
 
@@ -303,12 +303,20 @@ def build_confirmation_modal(ids: list, prefix: str, duration: str, partner: str
     }
 
 
-def build_user_status_modal(ids: list, prefix: str, duration: str, partner: str,
-                            notes: str, target_display: str, target_for_results: str,
-                            promo_records: list, duration_display: str = "",
-                            till_date: str = ""):
-    """
-    Build a modal showing each user's existing subscription status before confirmation.
+def build_user_status_modal(
+    *,
+    ids: list,
+    prefix: str,
+    duration: str,
+    partner: str,
+    notes: str,
+    target_display: str,
+    target_for_results: str,
+    promo_records: list,
+    duration_display: str = "",
+    till_date: str = "",
+) -> dict:
+    """Build a modal showing each user's existing subscription status before confirmation.
 
     Fetched records are grouped by promoCodeUser and displayed per-user with
     promo details, expiry status, used/unused flag, and device usage.
@@ -348,11 +356,17 @@ def build_user_status_modal(ids: list, prefix: str, duration: str, partner: str,
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"🟢 *`{uid}`* — New user, no existing promos",
+                    "text": f"🟢 *`{uid}`* — _New user, no existing promos_",
                 },
             })
         else:
-            lines = [f"🟡 *`{uid}`* — {len(records)} existing promo(s)"]
+            total_limit = sum(
+                r.get("promoCodeDeviceCountLimit", 0) for r in records
+            )
+            lines = [
+                f"🟡 *`{uid}`* — {len(records)} existing promo(s) · "
+                f"Total devices: {total_limit}/{AGGREGATE_DEVICE_LIMIT}"
+            ]
             for rec in records[:5]:
                 code = rec.get("promoCodeId", "?")
                 dur = rec.get("promoCodeDuration", "?")
@@ -371,7 +385,7 @@ def build_user_status_modal(ids: list, prefix: str, duration: str, partner: str,
 
                 expiry = _expiry_text(created, dur)
                 used_text = "✅ Used" if used else "⬜ Unused"
-                device_text = f"{len(devices)}/{device_limit} devices"
+                device_text = f"Devices: {len(devices)}/{device_limit}"
 
                 lines.append(
                     f"  • `{code}` · {dur} · {rec_partner} · Created {created_fmt}"
@@ -384,6 +398,19 @@ def build_user_status_modal(ids: list, prefix: str, duration: str, partner: str,
                 "text": {"type": "mrkdwn", "text": "\n".join(lines)},
             })
         blocks.append({"type": "divider"})
+
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": (
+                    "Review the users above, then press "
+                    "*Proceed to Confirm* to continue or *Cancel* to go back."
+                ),
+            }
+        ],
+    })
 
     if len(blocks) > 48:
         blocks = blocks[:47]

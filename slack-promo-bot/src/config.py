@@ -30,8 +30,15 @@ ENABLE_CONVERSATIONS_JOIN = os.getenv("ENABLE_CONVERSATIONS_JOIN", "0") == "1"
 # --- Extension prefixes (show history before granting) ---
 EXTENSION_PREFIXES = {"AVZ-ACAPEXT-", "AVZ-SPEXT-"}
 
-# Days before expiry when an extension is freely granted
-EXPIRY_THRESHOLD_DAYS = int(os.getenv("EXPIRY_THRESHOLD_DAYS", "4"))
+# When an existing code's expiry is within this many days of the requested date,
+# bump device count instead of creating a new code.
+EXPIRY_THRESHOLD_DAYS = int(os.getenv("EXPIRY_THRESHOLD_DAYS", "5"))
+
+# Maximum device count limit on a SINGLE promo code
+MAX_DEVICE_LIMIT = int(os.getenv("MAX_DEVICE_LIMIT", "5"))
+
+# Maximum TOTAL device count across ALL promo codes for a single user.
+AGGREGATE_DEVICE_LIMIT = int(os.getenv("AGGREGATE_DEVICE_LIMIT", "5"))
 
 # --- Authorization / guard rails ---
 # Comma-separated Slack user IDs allowed to generate promos (e.g., "U0123ABC,U0456DEF").
