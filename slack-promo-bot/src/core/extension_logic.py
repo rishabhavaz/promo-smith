@@ -1,4 +1,9 @@
-"""Smart extension logic for promo code extensions."""
+"""Smart promo generation logic.
+
+Decides whether to bump an existing code's device count or create a new one.
+This runs for ALL prefixes — the decision is based on what the user already
+has in the database, NOT on which prefix is selected.
+"""
 
 from datetime import datetime, timedelta, timezone
 from src.utils.duration import duration_to_days
@@ -40,13 +45,19 @@ def _can_bump(record: dict, all_records: list) -> dict | None:
     return None
 
 
-def resolve_extension_action(
+def resolve_generation_action(
     user_id: str,
     existing_records: list,
     requested_duration: str,
     requested_end_date: str = "",
 ) -> dict:
-    """Decide the extension action for a user based on their existing promos.
+    """Decide what to do when generating a promo for a user.
+
+    This runs for ALL prefixes. The decision is:
+    - If user is new (no records) -> create new code
+    - If user has LIFETIME code AND request is LIFETIME -> bump existing
+    - If user has code expiring near requested date -> bump existing
+    - Otherwise -> create new code
 
     Args:
         user_id: The email or phone being processed.
@@ -57,38 +68,44 @@ def resolve_extension_action(
     Returns a dict describing the action to take:
 
         {"action": "create_new"}
-        {"action": "create_new", "reason": "gap_too_large", ...}
+        {"action": "create_new", "reason": "gap_too_large", "nearest_expiry_days_diff": int}
         {"action": "bump_device_count", "record": dict, "reason": "lifetime"|"near_expiry", ...}
         {"action": "skip", "reason": str, "detail": str, ...}
     """
     if not existing_records:
         return {"action": "create_new"}
 
-    # --- Rule 2: Check for LIFETIME codes first ---
-    lifetime_records = [
-        r for r in existing_records
-        if (r.get("promoCodeDuration") or "").upper() == "LIFETIME"
-    ]
+    is_lifetime_request = (requested_duration or "").upper() == "LIFETIME"
 
-    if lifetime_records:
-        for record in lifetime_records:
-            block = _can_bump(record, existing_records)
-            if block is None:
-                return {
-                    "action": "bump_device_count",
-                    "record": record,
-                    "reason": "lifetime",
-                }
+    # --- Rule 1: LIFETIME request + user has LIFETIME code ---
+    if is_lifetime_request:
+        lifetime_records = [
+            r for r in existing_records
+            if (r.get("promoCodeDuration") or "").upper() == "LIFETIME"
+        ]
 
-        first_block = _can_bump(lifetime_records[0], existing_records)
-        return {
-            "action": "skip",
-            "reason": first_block["reason"],
-            "detail": first_block["detail"],
-            "record": lifetime_records[0],
-        }
+        if lifetime_records:
+            for record in lifetime_records:
+                block = _can_bump(record, existing_records)
+                if block is None:
+                    return {
+                        "action": "bump_device_count",
+                        "record": record,
+                        "reason": "lifetime",
+                    }
 
-    # --- Rule 3: Non-lifetime codes — compare expiry to requested end date ---
+            first_block = _can_bump(lifetime_records[0], existing_records)
+            return {
+                "action": "skip",
+                "reason": first_block["reason"],
+                "detail": first_block["detail"],
+                "record": lifetime_records[0],
+            }
+
+        # User has promos but none are LIFETIME — create a new LIFETIME code
+        return {"action": "create_new"}
+
+    # --- Rule 2: Non-lifetime request — compare expiry to requested end date ---
     requested_end = None
 
     if requested_end_date:

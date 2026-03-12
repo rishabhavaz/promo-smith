@@ -17,7 +17,7 @@ from src.slack_ui.modal_views import (
 )
 from src.core.promo_generator import create_promo_for_user
 from src.core.parse_api import fetch_promos_for_users, update_promo_object
-from src.core.extension_logic import resolve_extension_action
+from src.core.extension_logic import resolve_generation_action
 from src.slack_ui.notifications import notify_channel, format_results_message
 
 
@@ -328,54 +328,50 @@ def handle_promo_confirm(ack, body, client, view):
         dm = client.conversations_open(users=requester_user_id)
         target = dm["channel"]["id"]
 
-    # For extension prefixes, re-fetch fresh records for smart logic
-    all_promo_records = []
-    if prefix in EXTENSION_PREFIXES:
-        try:
-            all_promo_records = fetch_promos_for_users(ids)
-        except Exception as e:
-            print(f"[handle_promo_confirm] fetch_promos_for_users failed: {e}")
+    # Fetch existing records for smart generation logic (runs for ALL prefixes)
+    try:
+        all_promo_records = fetch_promos_for_users(ids)
+    except Exception as e:
+        print(f"[handle_promo_confirm] fetch_promos_for_users failed: {e}")
+        all_promo_records = []
 
-    # Generate promo codes
+    # Generate promo codes with smart logic
     rows, errors = [], 0
     for uid in ids:
         try:
-            if prefix in EXTENSION_PREFIXES:
-                user_records = [
-                    r for r in all_promo_records
-                    if r.get("promoCodeUser", "").lower() == uid.lower()
-                ]
-                till_date = data.get("till_date", "")
-                action = resolve_extension_action(
-                    uid, user_records, duration, requested_end_date=till_date
-                )
+            user_records = [
+                r for r in all_promo_records
+                if r.get("promoCodeUser", "").lower() == uid.lower()
+            ]
+            till_date = data.get("till_date", "")
+            action = resolve_generation_action(
+                uid, user_records, duration, requested_end_date=till_date
+            )
 
-                if action["action"] == "bump_device_count":
-                    record = action["record"]
-                    new_limit = (record.get("promoCodeDeviceCountLimit") or 1) + 1
-                    update_promo_object(record["objectId"], {
-                        "promoCodeDeviceCountLimit": new_limit,
-                        "promoCodeUsed": False,
-                    })
-                    reason = action.get("reason", "")
-                    code = record.get("promoCodeId", "?")
-                    rows.append((
-                        uid,
-                        f"UPDATED {code} (devices: {new_limit}, reason: {reason})",
-                        duration,
-                        partner,
-                    ))
+            if action["action"] == "bump_device_count":
+                record = action["record"]
+                new_limit = (record.get("promoCodeDeviceCountLimit") or 1) + 1
+                update_promo_object(record["objectId"], {
+                    "promoCodeDeviceCountLimit": new_limit,
+                    "promoCodeUsed": False,
+                })
+                reason = action.get("reason", "")
+                code = record.get("promoCodeId", "?")
+                rows.append((
+                    uid,
+                    f"UPDATED {code} (devices: {new_limit}, reason: {reason})",
+                    duration,
+                    partner,
+                ))
 
-                elif action["action"] == "skip":
-                    detail = action.get("detail", "limit reached")
-                    rows.append((uid, f"SKIPPED: {detail}", duration, partner))
+            elif action["action"] == "skip":
+                detail = action.get("detail", "limit reached")
+                rows.append((uid, f"SKIPPED: {detail}", duration, partner))
 
-                else:
-                    promo_id = create_promo_for_user(uid, prefix, duration, partner)
-                    rows.append((uid, promo_id, duration, partner))
             else:
                 promo_id = create_promo_for_user(uid, prefix, duration, partner)
                 rows.append((uid, promo_id, duration, partner))
+
         except Exception as e:
             rows.append((uid, f"ERROR: {e}", duration, partner))
             errors += 1
