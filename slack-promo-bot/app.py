@@ -5,7 +5,11 @@ Main application entry point.
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from src.config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN
-from src.slack_ui.handlers import handle_open_modal, handle_promo_submit, handle_promo_confirm
+from src.slack_ui.handlers import (
+    handle_open_modal, handle_promo_submit, handle_promo_confirm,
+    handle_extension_proceed, handle_user_status_proceed,
+    handle_override_choice_change,
+)
 
 
 # Initialize Slack app
@@ -26,10 +30,28 @@ def open_from_cmd(ack, body, client):
     handle_open_modal(ack, body, client, private_metadata=channel_id)
 
 
+@app.action("override_choice")
+def override_choice_change(ack, body, client):
+    """Update modal when override choice changes."""
+    handle_override_choice_change(ack, body, client)
+
+
 @app.view("promo_gui_submit")
 def promo_submit(ack, body, client, view):
     """Handle promo form submission and show confirmation modal."""
     handle_promo_submit(ack, body, client, view)
+
+
+@app.view("promo_ext_history")
+def ext_history_proceed(ack, body, client, view):
+    """Handle 'Proceed to Generate' from extension history review."""
+    handle_extension_proceed(ack, body, client, view)
+
+
+@app.view("promo_user_status")
+def user_status_proceed(ack, body, client, view):
+    """Handle 'Proceed to Confirm' from user status preview."""
+    handle_user_status_proceed(ack, body, client, view)
 
 
 @app.view("promo_gui_confirm")

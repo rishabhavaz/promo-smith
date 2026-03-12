@@ -2,8 +2,10 @@
 import os
 from dotenv import load_dotenv
 
-# Load .env for local dev
-load_dotenv()
+# Load .env for local dev — override=True ensures .env values always win
+# over any previously exported shell variables (prevents stale production
+# keys from leaking in when you switch between prod/dev configs).
+load_dotenv(override=True)
 
 # --- Slack tokens ---
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]    # xoxb-***
@@ -24,6 +26,12 @@ DEFAULT_PARTNER  = os.getenv("PROMO_PARTNER",  "AVAZ")
 # --- Notification settings ---
 PROMO_NOTIFY_CHANNEL = os.getenv("PROMO_NOTIFY_CHANNEL", "").strip()  # Slack channel ID (e.g., C0123456789)
 ENABLE_CONVERSATIONS_JOIN = os.getenv("ENABLE_CONVERSATIONS_JOIN", "0") == "1"
+
+# --- Extension prefixes (show history before granting) ---
+EXTENSION_PREFIXES = {"AVZ-ACAPEXT-", "AVZ-SPEXT-"}
+
+# Days before expiry when an extension is freely granted
+EXPIRY_THRESHOLD_DAYS = int(os.getenv("EXPIRY_THRESHOLD_DAYS", "4"))
 
 # --- Authorization / guard rails ---
 # Comma-separated Slack user IDs allowed to generate promos (e.g., "U0123ABC,U0456DEF").

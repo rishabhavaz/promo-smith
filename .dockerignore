@@ -25,7 +25,6 @@ env/
 # Secrets / local env files (do not bake into image)
 .env
 **/.env
-root_env
 slack-promo-bot/src/bot_env
 
 # Misc
