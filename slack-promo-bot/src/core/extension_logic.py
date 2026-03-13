@@ -7,16 +7,14 @@ has in the database, NOT on which prefix is selected.
 
 from datetime import datetime, timedelta, timezone
 from src.utils.duration import duration_to_days
-from src.config import EXPIRY_THRESHOLD_DAYS, MAX_DEVICE_LIMIT, AGGREGATE_DEVICE_LIMIT
+from src.config import EXPIRY_THRESHOLD_DAYS, MAX_DEVICE_LIMIT
 
 
-def _compute_aggregate_device_limit(all_records: list) -> int:
-    """Sum promoCodeDeviceCountLimit across all of a user's promo records."""
-    return sum(r.get("promoCodeDeviceCountLimit", 0) for r in all_records)
-
-
-def _can_bump(record: dict, all_records: list) -> dict | None:
+def _can_bump(record: dict) -> dict | None:
     """Check whether a specific record can have its device count bumped.
+
+    Only checks the per-code limit — each promo code can have up to
+    MAX_DEVICE_LIMIT devices independently.
 
     Returns None if bump is allowed.
     Returns a dict with skip reason if bump is NOT allowed.
@@ -29,16 +27,6 @@ def _can_bump(record: dict, all_records: list) -> dict | None:
             "detail": (
                 f"Code {record.get('promoCodeId', '?')} already at "
                 f"max {MAX_DEVICE_LIMIT} devices"
-            ),
-        }
-
-    aggregate_total = _compute_aggregate_device_limit(all_records)
-    if aggregate_total + 1 > AGGREGATE_DEVICE_LIMIT:
-        return {
-            "reason": "aggregate_limit_reached",
-            "detail": (
-                f"User already has {aggregate_total} total devices "
-                f"across all codes (max: {AGGREGATE_DEVICE_LIMIT})"
             ),
         }
 
@@ -86,7 +74,7 @@ def resolve_generation_action(
 
         if lifetime_records:
             for record in lifetime_records:
-                block = _can_bump(record, existing_records)
+                block = _can_bump(record)
                 if block is None:
                     return {
                         "action": "bump_device_count",
@@ -94,7 +82,7 @@ def resolve_generation_action(
                         "reason": "lifetime",
                     }
 
-            first_block = _can_bump(lifetime_records[0], existing_records)
+            first_block = _can_bump(lifetime_records[0])
             return {
                 "action": "skip",
                 "reason": first_block["reason"],
@@ -102,7 +90,6 @@ def resolve_generation_action(
                 "record": lifetime_records[0],
             }
 
-        # User has promos but none are LIFETIME — create a new LIFETIME code
         return {"action": "create_new"}
 
     # --- Rule 2: Non-lifetime request — compare expiry to requested end date ---
@@ -150,7 +137,7 @@ def resolve_generation_action(
         return {"action": "create_new"}
 
     if best_diff < EXPIRY_THRESHOLD_DAYS:
-        block = _can_bump(best_record, existing_records)
+        block = _can_bump(best_record)
         if block is not None:
             return {
                 "action": "skip",

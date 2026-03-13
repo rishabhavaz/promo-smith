@@ -2,7 +2,7 @@
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from src.config import DEFAULT_PREFIX, DEFAULT_DURATION, AGGREGATE_DEVICE_LIMIT
+from src.config import DEFAULT_PREFIX, DEFAULT_DURATION
 from src.utils.duration import duration_to_days
 
 
@@ -360,13 +360,7 @@ def build_user_status_modal(
                 },
             })
         else:
-            total_limit = sum(
-                r.get("promoCodeDeviceCountLimit", 0) for r in records
-            )
-            lines = [
-                f"🟡 *`{uid}`* — {len(records)} existing promo(s) · "
-                f"Total devices: {total_limit}/{AGGREGATE_DEVICE_LIMIT}"
-            ]
+            lines = [f"🟡 *`{uid}`* — {len(records)} existing promo(s)"]
             for rec in records[:5]:
                 code = rec.get("promoCodeId", "?")
                 dur = rec.get("promoCodeDuration", "?")
