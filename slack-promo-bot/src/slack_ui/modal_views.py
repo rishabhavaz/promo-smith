@@ -60,10 +60,11 @@ def build_promo_form_modal(
         _mk_plain_option("AVZ-ACAPEXT-"),
         _mk_plain_option("AVZ-SPEXT-"),
         _mk_plain_option("AVZ-RZPLT-"),
+        _mk_plain_option("AVZ-RZP1Y-"),
+        _mk_plain_option("AVZ-RZP1M-"),
         _mk_plain_option("AVZ-STRLT-"),
-        _mk_plain_option("AVZ-LOANER-"),
-        _mk_plain_option("AVZ-MGRT-"),
-        _mk_plain_option("AVZ-LEGACY-"),
+        _mk_plain_option("AVZ-STR1Y-"),
+        _mk_plain_option("AVZ-STR1M-"),
     ]
 
     duration_options = [
