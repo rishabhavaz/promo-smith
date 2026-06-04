@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from src.config import DEFAULT_PREFIX, DEFAULT_DURATION
 from src.utils.duration import duration_to_days
 
+NUM_ENTRY_ROWS = 5
+
 
 def _expiry_text(created_at_str: str, duration_str: str) -> str:
     """Return a human-readable expiry status string."""
@@ -40,60 +42,139 @@ def _pick_initial_option(options: list, selected_value: str, default_value: str)
     return (options or [_mk_plain_option(default_value)])[0]
 
 
-def build_promo_form_modal(
-    *,
-    users_raw: str = "",
-    prefix: str = DEFAULT_PREFIX,
-    custom_prefix: str = "",
-    duration: str = DEFAULT_DURATION,
-    custom_days: str = "",
-    till_date: str = "",
-    notes: str = "",
-):
-    """Build the initial promo generation form modal."""
-    prefix_options = [
-        _mk_plain_option("AVZ-2DA-"),
-        _mk_plain_option("AVZ-ACE-"),
-        _mk_plain_option("AVZ-ACE1Y-"),
-        _mk_plain_option("AVZ-ACAP-"),
-        _mk_plain_option("AVZ-ARMB-"),
-        _mk_plain_option("AVZ-ACAPEXT-"),
-        _mk_plain_option("AVZ-SPEXT-"),
-        _mk_plain_option("AVZ-RZPLT-"),
-        _mk_plain_option("AVZ-RZP1Y-"),
-        _mk_plain_option("AVZ-RZP1M-"),
-        _mk_plain_option("AVZ-STRLT-"),
-        _mk_plain_option("AVZ-STR1Y-"),
-        _mk_plain_option("AVZ-STR1M-"),
-    ]
+# ---- Shared option lists ----
 
-    duration_options = [
-        _mk_plain_option("LIFETIME"),
-        _mk_plain_option("30D"),
-        _mk_plain_option("60D"),
-        _mk_plain_option("90D"),
-        _mk_plain_option("6M"),
-        _mk_plain_option("1Y"),
-    ]
+PREFIX_OPTIONS = [
+    _mk_plain_option("AVZ-2DA-"),
+    _mk_plain_option("AVZ-ACE-"),
+    _mk_plain_option("AVZ-ACE1Y-"),
+    _mk_plain_option("AVZ-ACAP-"),
+    _mk_plain_option("AVZ-ARMB-"),
+    _mk_plain_option("AVZ-ACAPEXT-"),
+    _mk_plain_option("AVZ-SPEXT-"),
+    _mk_plain_option("AVZ-RZPLT-"),
+    _mk_plain_option("AVZ-RZP1Y-"),
+    _mk_plain_option("AVZ-RZP1M-"),
+    _mk_plain_option("AVZ-STRLT-"),
+    _mk_plain_option("AVZ-STR1Y-"),
+    _mk_plain_option("AVZ-STR1M-"),
+]
 
+DURATION_OPTIONS = [
+    _mk_plain_option("LIFETIME"),
+    _mk_plain_option("30D"),
+    _mk_plain_option("60D"),
+    _mk_plain_option("90D"),
+    _mk_plain_option("6M"),
+    _mk_plain_option("1Y"),
+]
+
+
+def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=""):
+    """Build Slack blocks for a single entry row (1-indexed)."""
     user_el = {
         "type": "plain_text_input",
         "action_id": "value",
-        "multiline": True,
-        "focus_on_load": True,
-        "placeholder": {"type": "plain_text", "text": "abc@gmail.com, +14155552671, xyz@company.com"},
+        "placeholder": {"type": "plain_text", "text": "email or phone number"},
     }
-    if (users_raw or "").strip():
-        user_el["initial_value"] = users_raw
+    if n == 1:
+        user_el["focus_on_load"] = True
+    if user_id:
+        user_el["initial_value"] = user_id
 
-    custom_prefix_el = {
+    mixpanel_el = {
         "type": "plain_text_input",
         "action_id": "value",
-        "placeholder": {"type": "plain_text", "text": "e.g., AVZ-TRIAL-"},
+        "placeholder": {"type": "plain_text", "text": "Optional — paste Mixpanel URL or device ID"},
     }
-    if (custom_prefix or "").strip():
-        custom_prefix_el["initial_value"] = custom_prefix
+    if mixpanel:
+        mixpanel_el["initial_value"] = mixpanel
 
+    blocks = [
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"*— Entry {n} —*"}],
+        },
+        {
+            "type": "input",
+            "block_id": f"user_{n}",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "User ID (email or phone)"},
+            "element": user_el,
+        },
+        {
+            "type": "input",
+            "block_id": f"mixpanel_{n}",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "Mixpanel URL or Device ID"},
+            "element": mixpanel_el,
+        },
+        {
+            "type": "input",
+            "block_id": f"prefix_{n}",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "Prefix"},
+            "element": {
+                "type": "static_select",
+                "action_id": "value",
+                "initial_option": _pick_initial_option(PREFIX_OPTIONS, prefix, DEFAULT_PREFIX),
+                "options": PREFIX_OPTIONS,
+            },
+        },
+        {
+            "type": "input",
+            "block_id": f"duration_{n}",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "Duration"},
+            "element": {
+                "type": "static_select",
+                "action_id": "value",
+                "initial_option": _pick_initial_option(DURATION_OPTIONS, duration, DEFAULT_DURATION),
+                "options": DURATION_OPTIONS,
+            },
+        },
+    ]
+    return blocks
+
+
+def build_promo_form_modal(*, entries=None, notes=""):
+    """Build the 5-row promo generation form modal.
+
+    Args:
+        entries: Optional list of dicts with keys user_id, mixpanel, prefix, duration
+                 for pre-populating the form.
+        notes: Pre-filled notes text.
+    """
+    entries = entries or []
+
+    blocks = [
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        "Fill one row per user (up to 5). Empty rows are skipped. "
+                        "Paste a Mixpanel URL or device ID to target a specific device."
+                    ),
+                }
+            ],
+        },
+    ]
+
+    for n in range(1, NUM_ENTRY_ROWS + 1):
+        e = entries[n - 1] if n - 1 < len(entries) else {}
+        blocks.extend(_build_entry_blocks(
+            n,
+            user_id=e.get("user_id", ""),
+            mixpanel=e.get("mixpanel", ""),
+            prefix=e.get("prefix", ""),
+            duration=e.get("duration", ""),
+        ))
+        if n < NUM_ENTRY_ROWS:
+            blocks.append({"type": "divider"})
+
+    # Shared notes field
     notes_el = {
         "type": "plain_text_input",
         "action_id": "value",
@@ -103,110 +184,13 @@ def build_promo_form_modal(
     if (notes or "").strip():
         notes_el["initial_value"] = notes
 
-    blocks = [
-        {
-            "type": "input",
-            "block_id": "users_text",
-            "label": {"type": "plain_text", "text": "Users (emails or phone numbers)"},
-            "element": user_el,
-            "hint": {"type": "plain_text", "text": "Comma-separated. Field wraps up to 3 lines for readability."},
-        },
-        {
-            "type": "input",
-            "block_id": "prefix",
-            "label": {"type": "plain_text", "text": "Prefix"},
-            "element": {
-                "type": "static_select",
-                "action_id": "value",
-                "initial_option": _pick_initial_option(prefix_options, prefix, DEFAULT_PREFIX),
-                "options": prefix_options,
-            },
-        },
-        {
-            "type": "input",
-            "block_id": "custom_prefix",
-            "optional": True,
-            "label": {"type": "plain_text", "text": "Custom Prefix (optional)"},
-            "element": custom_prefix_el,
-        },
-        {
-            "type": "input",
-            "block_id": "duration_block",
-            "optional": False,
-            "label": {"type": "plain_text", "text": "Duration"},
-            "hint": {
-                "type": "plain_text",
-                "text": "Default duration. Ignored if an override field below is filled.",
-            },
-            "element": {
-                "type": "static_select",
-                "action_id": "duration",
-                "initial_option": _pick_initial_option(duration_options, duration, DEFAULT_DURATION),
-                "options": duration_options,
-            },
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": (
-                        "ℹ️ *Override fields below are optional.* Only fill them if you need a custom duration. "
-                        "If both are filled, End date takes priority."
-                    ),
-                }
-            ],
-        },
-        {
-            "type": "input",
-            "block_id": "custom_days_block",
-            "optional": True,
-            "label": {"type": "plain_text", "text": "Override — Number of days"},
-            "hint": {
-                "type": "plain_text",
-                "text": "If filled, this overrides the Duration dropdown above. Must be a positive whole number.",
-            },
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "custom_days",
-                "placeholder": {"type": "plain_text", "text": "e.g., 45"},
-                **(
-                    {"initial_value": str(custom_days).strip()}
-                    if (custom_days or "").strip()
-                    else {}
-                ),
-            },
-        },
-        {
-            "type": "input",
-            "block_id": "till_date_block",
-            "optional": True,
-            "label": {"type": "plain_text", "text": "Override — End date"},
-            "hint": {
-                "type": "plain_text",
-                "text": "Highest priority. If filled, this overrides everything above. Must be a future date.",
-            },
-            "element": {
-                "type": "datepicker",
-                "action_id": "till_date",
-                "placeholder": {"type": "plain_text", "text": "Select date"},
-                **(
-                    {"initial_date": str(till_date).strip()}
-                    if (till_date or "").strip()
-                    else {}
-                ),
-            },
-        },
-    ]
-
-    blocks.append(
-        {
-            "type": "input",
-            "block_id": "notes",
-            "label": {"type": "plain_text", "text": "Notes (reason for promo)"},
-            "element": notes_el,
-        }
-    )
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "input",
+        "block_id": "notes",
+        "label": {"type": "plain_text", "text": "Notes (reason for promo)"},
+        "element": notes_el,
+    })
 
     return {
         "type": "modal",
@@ -218,49 +202,72 @@ def build_promo_form_modal(
     }
 
 
-def build_confirmation_modal(ids: list, prefix: str, duration: str, partner: str,
-                             notes: str, target_display: str, target_for_results: str,
-                             duration_display: str = "", till_date: str = ""):
-    """
-    Build the confirmation modal with all generation details.
-    
-    Args:
-        ids: List of user IDs
-        prefix: Promo code prefix
-        duration: Promo duration (e.g. "97D")
-        partner: Distribution partner
-        notes: Reason for generation
-        target_display: Display name for results destination
-        target_for_results: Actual channel/DM ID for results
-        till_date: Optional YYYY-MM-DD end date selected by the user
-        
-    Returns:
-        Modal view dictionary
-    """
-    user_list_text = "\n".join([f"• `{uid}`" for uid in ids[:20]])
-    if len(ids) > 20:
-        user_list_text += f"\n_...and {len(ids) - 20} more_"
+def build_confirmation_modal(entries: list, partner: str, notes: str,
+                             target_display: str, target_for_results: str):
+    """Build the confirmation modal showing a per-entry summary table.
 
-    duration_text = (duration_display or "").strip()
-    if not duration_text:
-        duration_text = f"`{duration}`"
-        if till_date:
-            try:
-                till_fmt = datetime.strptime(till_date, "%Y-%m-%d").strftime("%b %d, %Y")
-                duration_text = f"`{duration}` (till {till_fmt})"
-            except ValueError:
-                pass
+    Args:
+        entries: List of entry dicts (user_id, device_id, prefix, duration).
+        partner: Distribution partner.
+        notes: Reason for generation.
+        target_display: Display name for results destination.
+        target_for_results: Actual channel/DM ID for results.
+    """
+    entry_lines = []
+    for i, e in enumerate(entries, 1):
+        line = f"{i}. `{e['user_id']}` · `{e['prefix']}` · {e['duration']}"
+        if e.get("device_id"):
+            did = e["device_id"]
+            short = did if len(did) <= 16 else did[:12] + "…"
+            line += f" · 📱 `{short}`"
+        entry_lines.append(line)
 
     meta = {
-        "ids": ids,
-        "prefix": prefix,
-        "duration": duration,
+        "entries": entries,
         "partner": partner,
         "target": target_for_results,
         "notes": notes,
     }
-    if till_date:
-        meta["till_date"] = till_date
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "⚠️ Review Before Confirming", "emoji": True},
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*{len(entries)} entry/entries to generate*"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(entry_lines)},
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Partner*\n`{partner}`"},
+                {"type": "mrkdwn", "text": f"*Post Results To*\n{target_display}"},
+            ],
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Reason for Generation*\n{notes}"},
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "✅ Press *Confirm & Generate* to create these promo codes\n"
+                    "❌ Press *Cancel* to go back and make changes"
+                ),
+            },
+        },
+    ]
 
     return {
         "type": "modal",
@@ -269,63 +276,29 @@ def build_confirmation_modal(ids: list, prefix: str, duration: str, partner: str
         "submit": {"type": "plain_text", "text": "✓ Confirm & Generate"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "private_metadata": json.dumps(meta),
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "⚠️ Review Before Confirming", "emoji": True}
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "*Promo Code Settings*"}
-            },
-            {"type": "section", "fields": [
-                {"type": "mrkdwn", "text": f"*Prefix*\n`{prefix}`"},
-                {"type": "mrkdwn", "text": f"*Duration*\n{duration_text}"},
-                {"type": "mrkdwn", "text": f"*Partner*\n`{partner}`"},
-                {"type": "mrkdwn", "text": f"*Post Results To*\n{target_display}"},
-            ]},
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*Reason for Generation*\n{notes}"}
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*Users ({len(ids)} total)*\n{user_list_text}"}
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "✅ Press *Confirm & Generate* to create these promo codes\n❌ Press *Cancel* to go back and make changes"}
-            },
-        ],
+        "blocks": blocks,
     }
 
 
 def build_user_status_modal(
     *,
-    ids: list,
-    prefix: str,
-    duration: str,
+    entries: list,
     partner: str,
     notes: str,
     target_display: str,
     target_for_results: str,
     promo_records: list,
-    duration_display: str = "",
-    till_date: str = "",
 ) -> dict:
     """Build a modal showing each user's existing subscription status before confirmation.
 
-    Fetched records are grouped by promoCodeUser and displayed per-user with
-    promo details, expiry status, used/unused flag, and device usage.
+    Entries are displayed per-user with promo details, expiry status, used/unused
+    flag, device usage, and the settings chosen for this entry.
     """
     by_user = defaultdict(list)
     for rec in promo_records:
         by_user[rec.get("promoCodeUser", "").lower()].append(rec)
 
+    ids = [e["user_id"] for e in entries]
     new_count = sum(1 for uid in ids if uid.lower() not in by_user)
     existing_count = len(ids) - new_count
 
@@ -349,19 +322,31 @@ def build_user_status_modal(
         {"type": "divider"},
     ]
 
-    for uid in ids:
+    for entry in entries:
+        uid = entry["user_id"]
         records = by_user.get(uid.lower(), [])
+
+        # Entry settings line
+        settings = f"Prefix: `{entry['prefix']}` · Duration: `{entry['duration']}`"
+        if entry.get("device_id"):
+            did = entry["device_id"]
+            short = did if len(did) <= 16 else did[:12] + "…"
+            settings += f" · 📱 `{short}`"
 
         if not records:
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"🟢 *`{uid}`* — _New user, no existing promos_",
+                    "text": (
+                        f"🟢 *`{uid}`* — _New user, no existing promos_\n"
+                        f"→ {settings}"
+                    ),
                 },
             })
         else:
             lines = [f"🟡 *`{uid}`* — {len(records)} existing promo(s)"]
+            lines.append(f"→ {settings}")
             for rec in records[:5]:
                 code = rec.get("promoCodeId", "?")
                 dur = rec.get("promoCodeDuration", "?")
@@ -411,20 +396,15 @@ def build_user_status_modal(
         blocks = blocks[:47]
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"_...truncated. {len(ids)} users total._"},
+            "text": {"type": "mrkdwn", "text": f"_...truncated. {len(entries)} entries total._"},
         })
 
     meta = {
-        "ids": ids,
-        "prefix": prefix,
-        "duration": duration,
+        "entries": entries,
         "partner": partner,
         "target": target_for_results,
         "notes": notes,
-        "duration_display": duration_display,
     }
-    if till_date:
-        meta["till_date"] = till_date
 
     return {
         "type": "modal",
@@ -437,60 +417,58 @@ def build_user_status_modal(
     }
 
 
-def build_extension_history_modal(ids: list, prefix: str, duration: str, partner: str,
-                                   notes: str, target_display: str, target_for_results: str,
-                                   promo_records: list, till_date: str = ""):
-    """
-    Build a modal showing existing promo history for each user before granting extensions.
-
-    Args:
-        ids: List of user IDs (emails/phones) being processed
-        prefix: Selected extension prefix
-        duration: Selected duration (computed days string like "97D")
-        partner: Distribution partner
-        notes: Reason for extension
-        target_display: Human-readable results destination
-        target_for_results: Channel/DM ID for results
-        promo_records: Raw Parse records returned by fetch_promos_for_users
-        till_date: Optional YYYY-MM-DD end date selected by the user
-    """
+def build_extension_history_modal(entries: list, partner: str, notes: str,
+                                   target_display: str, target_for_results: str,
+                                   promo_records: list):
+    """Build a modal showing existing promo history for each user before granting extensions."""
     by_user = defaultdict(list)
     for rec in promo_records:
         by_user[rec.get("promoCodeUser", "").lower()].append(rec)
 
-    duration_text = f"`{duration}`"
-    if till_date:
-        try:
-            till_fmt = datetime.strptime(till_date, "%Y-%m-%d").strftime("%b %d, %Y")
-            duration_text = f"`{duration}` (till {till_fmt})"
-        except ValueError:
-            pass
-
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "Extension History Review", "emoji": True}
+            "text": {"type": "plain_text", "text": "Extension History Review", "emoji": True},
         },
         {
             "type": "context",
             "elements": [
-                {"type": "mrkdwn",
-                 "text": f"Prefix: `{prefix}` · Duration: {duration_text} · Partner: `{partner}` · Post to: {target_display}"}
-            ]
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"{len(entries)} entry/entries · Partner: `{partner}` "
+                        f"· Post to: {target_display}"
+                    ),
+                }
+            ],
         },
         {"type": "divider"},
     ]
 
-    for uid in ids:
+    for entry in entries:
+        uid = entry["user_id"]
         records = by_user.get(uid.lower(), [])
+
+        settings = f"Prefix: `{entry['prefix']}` · Duration: `{entry['duration']}`"
+        if entry.get("device_id"):
+            did = entry["device_id"]
+            short = did if len(did) <= 16 else did[:12] + "…"
+            settings += f" · 📱 `{short}`"
 
         if not records:
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*`{uid}`*\n_No existing promos found — new user_"}
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*`{uid}`*\n_No existing promos found — new user_\n"
+                        f"→ {settings}"
+                    ),
+                },
             })
         else:
             lines = [f"*`{uid}`* — {len(records)} existing promo(s)"]
+            lines.append(f"→ {settings}")
             for rec in records[:5]:
                 code = rec.get("promoCodeId", "?")
                 dur = rec.get("promoCodeDuration", "?")
@@ -507,7 +485,7 @@ def build_extension_history_modal(ids: list, prefix: str, duration: str, partner
                 lines.append(f"  _...and {len(records) - 5} more_")
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(lines)}
+                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
             })
         blocks.append({"type": "divider"})
 
@@ -515,27 +493,25 @@ def build_extension_history_modal(ids: list, prefix: str, duration: str, partner
         blocks = blocks[:47]
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"_...truncated. {len(ids)} users total._"}
+            "text": {"type": "mrkdwn", "text": f"_...truncated. {len(entries)} entries total._"},
         })
 
     blocks.append({
         "type": "context",
         "elements": [
-            {"type": "mrkdwn",
-             "text": "Press *Proceed to Generate* to create extension codes, or *Cancel* to go back."}
-        ]
+            {
+                "type": "mrkdwn",
+                "text": "Press *Proceed to Generate* to create extension codes, or *Cancel* to go back.",
+            }
+        ],
     })
 
     meta = {
-        "ids": ids,
-        "prefix": prefix,
-        "duration": duration,
+        "entries": entries,
         "partner": partner,
         "target": target_for_results,
         "notes": notes,
     }
-    if till_date:
-        meta["till_date"] = till_date
 
     return {
         "type": "modal",

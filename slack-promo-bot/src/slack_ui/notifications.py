@@ -3,35 +3,29 @@ import re
 from src.config import ENABLE_CONVERSATIONS_JOIN
 
 
-def notify_channel(client, notify_channel: str, target: str, prefix: str, duration: str, 
-                  partner: str, processed_count: int, errors: int, requester_user_id: str, 
-                  notes: str = "", rows: list = None) -> None:
-    """
-    Send a notification to a configured channel about promo generation.
-    
+def notify_channel(client, notify_channel_id: str, target: str,
+                   processed_count: int, errors: int, requester_user_id: str,
+                   notes: str = "", rows: list = None) -> None:
+    """Send a notification to a configured channel about promo generation.
+
     Args:
         client: Slack client instance
-        notify_channel: Channel ID to send notification to
+        notify_channel_id: Channel ID to send notification to
         target: Where results were posted
-        prefix: Promo code prefix used
-        duration: Duration used
-        partner: Partner used
         processed_count: Number of promos processed
         errors: Number of errors encountered
         requester_user_id: ID of user who requested generation
         notes: Optional notes/reason for generation
-        rows: Optional list of (user_id, promo_code, duration, partner) tuples
+        rows: List of result dicts with keys: user_id, result, prefix, duration, partner, device_id
     """
-    channel = (notify_channel or "").strip()
+    channel = (notify_channel_id or "").strip()
     if not channel:
         return
 
-    # Optional join for public channels (C…) — disabled by default to avoid missing_scope logs
     if ENABLE_CONVERSATIONS_JOIN and re.fullmatch(r"C[A-Z0-9]+", channel):
         try:
             client.conversations_join(channel=channel)
         except Exception as e:
-            # Ignore join failures; we'll attempt to post anyway
             print(f"[notify] conversations_join failed for {channel}: {e}")
 
     try:
@@ -39,32 +33,52 @@ def notify_channel(client, notify_channel: str, target: str, prefix: str, durati
     except Exception:
         requester = "unknown"
 
+    # Collect unique prefixes and durations from rows for the summary line
+    prefixes = []
+    durations = []
+    partner = ""
+    for row in (rows or []):
+        p = row.get("prefix", "")
+        d = row.get("duration", "")
+        if p and p not in prefixes:
+            prefixes.append(p)
+        if d and d not in durations:
+            durations.append(d)
+        if not partner:
+            partner = row.get("partner", "")
+
+    prefix_str = ", ".join(f"`{p}`" for p in prefixes) if prefixes else "—"
+    duration_str = ", ".join(f"`{d}`" for d in durations) if durations else "—"
+    partner_str = f"`{partner}`" if partner else "—"
+
     lines = [
         f"*Promo generation completed* by {requester}",
         f"Channel: <#{target}>",
-        f"Prefix: `{prefix}` · Duration: `{duration}` · Partner: `{partner}`",
+        f"Prefix: {prefix_str} · Duration: {duration_str} · Partner: {partner_str}",
     ]
-    
+
     if notes:
-        lines.append(f"Notes: {notes}")
-    
+        lines.append(f'Notes: "{notes}"')
+
     lines.append(f"Processed: {processed_count} · Errors: {errors}")
-    
-    # Add generated promo codes
+
     if rows:
         lines.append("\n*Generated Codes:*")
-        for uid, code_or_err, _, _ in rows:
-            if str(code_or_err).startswith("ERROR:"):
-                lines.append(f"• `{uid}` → _{code_or_err}_")
-            else:
-                lines.append(f"• `{uid}` → `{code_or_err}`")
-    
+        for row in rows:
+            uid = row["user_id"]
+            result = row["result"]
+            device_id = row.get("device_id")
+
+            line = f"• `{uid}` → `{result}`"
+            if device_id:
+                line += f" · 📱 `{device_id}`"
+            lines.append(line)
+
     text = "\n".join(lines)
 
     try:
         client.chat_postMessage(channel=channel, text=text)
     except Exception as e:
-        # Fall back: DM requester with the error for visibility
         print(f"[notify] chat_postMessage failed for {channel}: {e}")
         _fallback_dm_requester(client, requester_user_id, channel, e)
 
@@ -86,34 +100,56 @@ def _fallback_dm_requester(client, requester_user_id: str, channel: str, error: 
         print(f"[notify] DM fallback failed: {e2}")
 
 
-def format_results_message(prefix: str, duration: str, partner: str, 
-                          notes: str, ids: list, rows: list, errors: int) -> str:
-    """
-    Format the promo generation results message.
-    
+def format_results_message(notes: str, entries: list, rows: list, errors: int) -> str:
+    """Format the promo generation results message posted to the target channel.
+
     Args:
-        prefix: Promo code prefix
-        duration: Duration
-        partner: Partner
         notes: Generation notes/reason
-        ids: List of user IDs
-        rows: List of (user_id, promo_code, duration, partner) tuples
+        entries: List of entry dicts submitted by the user
+        rows: List of result dicts (user_id, result, prefix, duration, partner, device_id)
         errors: Number of errors
-        
-    Returns:
-        Formatted message string
     """
-    lines = [f"*Promo results* (prefix={prefix}, duration={duration}, partner={partner})"]
-    
+    # Collect unique prefixes and durations for the header
+    prefixes = []
+    durations = []
+    partner = ""
+    for row in (rows or []):
+        p = row.get("prefix", "")
+        d = row.get("duration", "")
+        if p and p not in prefixes:
+            prefixes.append(p)
+        if d and d not in durations:
+            durations.append(d)
+        if not partner:
+            partner = row.get("partner", "")
+
+    prefix_str = ", ".join(f"`{p}`" for p in prefixes) if prefixes else "—"
+    duration_str = ", ".join(f"`{d}`" for d in durations) if durations else "—"
+    partner_str = f"`{partner}`" if partner else "—"
+
+    lines = [
+        f"*Promo results*",
+        f"Prefix: {prefix_str} · Duration: {duration_str} · Partner: {partner_str}",
+    ]
+
     if notes:
-        lines.append(f"Notes: {notes}")
-        
-    lines.append(f"Processed: {len(ids)} · Errors: {errors}")
-    
-    for uid, code_or_err, _, _ in rows:
-        if str(code_or_err).startswith("ERROR:"):
-            lines.append(f"• `{uid}` → _{code_or_err}_")
-        else:
-            lines.append(f"• `{uid}` → `{code_or_err}`")
-            
+        lines.append(f'Notes: "{notes}"')
+
+    lines.append(f"Processed: {len(rows)} · Errors: {errors}")
+
+    if rows:
+        lines.append("\n*Generated Codes:*")
+        for row in rows:
+            uid = row["user_id"]
+            result = row["result"]
+            device_id = row.get("device_id")
+
+            if str(result).startswith("ERROR:"):
+                line = f"• `{uid}` → _{result}_"
+            else:
+                line = f"• `{uid}` → `{result}`"
+            if device_id:
+                line += f" · 📱 `{device_id}`"
+            lines.append(line)
+
     return "\n".join(lines)

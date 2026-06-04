@@ -62,10 +62,10 @@ def promo_confirm(ack, body, client, view):
 
 def main():
     """Start the Slack bot in Socket Mode."""
-    print("⚡️ Promo Smith bot is starting...")
+    print("⚡️ Promo Smith bot is starting... [v2 — 5-row table + device ID]")
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)
     handler.start()
-    print("✅ Promo Smith bot is running!")
+    print("✅ Promo Smith bot is running! [v2]")
 
 
 if __name__ == "__main__":

@@ -17,32 +17,34 @@ def _gen_suffix(seen: Set[str]) -> str:
             return s
 
 
-def create_promo_for_user(user_id: str, prefix: str, duration: str, partner: str) -> str:
+def create_promo_for_user(user_id: str, prefix: str, duration: str, partner: str,
+                          *, device_id: str | None = None) -> str:
     """
     Generate and create a unique promo code for a user.
-    
+
     Args:
         user_id: The user's email or phone number
         prefix: The promo code prefix (e.g., "AVZ-2DA-")
         duration: The duration of the promo (e.g., "LIFETIME", "30D")
         partner: The distribution partner (e.g., "AVAZ")
-    
+        device_id: Optional device ID to pre-attach to the promo's device list
+
     Returns:
         The generated promo code
-        
+
     Raises:
         RuntimeError: If a unique code cannot be generated after many attempts
     """
     uid = user_id.strip().lower()
     seen: Set[str] = set()
-    
+
     for _ in range(100):  # retry on rare collisions
         code = f"{prefix}{_gen_suffix(seen)}"
-        
+
         # If exists, try next code
         if promo_exists(code):
             continue
-            
+
         payload = {
             "promoCodeId": code,
             "promoCodeDeviceCountLimit": 1,
@@ -50,7 +52,9 @@ def create_promo_for_user(user_id: str, prefix: str, duration: str, partner: str
             "promoCodeDuration": duration,
             "promoCodeDistributionPartner": partner,
         }
+        if device_id:
+            payload["promoCodeUsedDevices"] = [device_id]
         create_promo_object(payload)
         return code
-        
+
     raise RuntimeError("Could not generate a unique promo after many attempts")

@@ -1,12 +1,10 @@
 """Slack event handlers for the promo bot."""
-import re
 import json
-from datetime import date
 from src.config import (
     DEFAULT_PREFIX, DEFAULT_DURATION, DEFAULT_PARTNER,
     PROMO_NOTIFY_CHANNEL, EXTENSION_PREFIXES,
 )
-from src.utils.validation import parse_user_ids, validate_user_id
+from src.utils.validation import parse_user_ids, validate_user_id, extract_device_id
 from src.utils.authz import get_requester_user_id, is_authorized_slack_user, unauthorized_text
 from src.slack_ui.modal_views import (
     build_promo_form_modal,
@@ -14,6 +12,7 @@ from src.slack_ui.modal_views import (
     build_access_denied_modal,
     build_extension_history_modal,
     build_user_status_modal,
+    NUM_ENTRY_ROWS,
 )
 from src.core.promo_generator import create_promo_for_user
 from src.core.parse_api import fetch_promos_for_users, update_promo_object
@@ -21,24 +20,70 @@ from src.core.extension_logic import resolve_generation_action
 from src.slack_ui.notifications import notify_channel, format_results_message
 
 
+def _read_entries_from_form(vals: dict) -> list[dict]:
+    """Parse the 5 entry rows from a submitted form's state values.
+
+    Returns a list of entry dicts for non-empty rows:
+        {user_id, mixpanel_raw, device_id, prefix, duration}
+    """
+    entries = []
+    for n in range(1, NUM_ENTRY_ROWS + 1):
+        user_raw = (
+            ((vals.get(f"user_{n}") or {}).get("value") or {}).get("value") or ""
+        ).strip()
+        if not user_raw:
+            continue
+
+        mixpanel_raw = (
+            ((vals.get(f"mixpanel_{n}") or {}).get("value") or {}).get("value") or ""
+        ).strip()
+
+        prefix_val = (
+            ((vals.get(f"prefix_{n}") or {}).get("value") or {}).get("selected_option") or {}
+        ).get("value", DEFAULT_PREFIX)
+
+        duration_val = (
+            ((vals.get(f"duration_{n}") or {}).get("value") or {}).get("selected_option") or {}
+        ).get("value", DEFAULT_DURATION)
+
+        # Normalize user ID
+        ids = parse_user_ids(user_raw)
+        user_id = ids[0] if ids else user_raw.strip().lower()
+
+        # Extract device ID from Mixpanel URL or raw input
+        device_id = extract_device_id(mixpanel_raw) if mixpanel_raw else None
+
+        entries.append({
+            "user_id": user_id,
+            "mixpanel_raw": mixpanel_raw,
+            "device_id": device_id,
+            "prefix": prefix_val,
+            "duration": duration_val,
+        })
+    return entries
+
+
+def _read_entries_from_metadata(view: dict, caller: str = "") -> dict:
+    """Read entries and shared fields from a modal's private_metadata."""
+    raw = view.get("private_metadata") or "{}"
+    print(f"[metadata:{caller}] raw private_metadata ({len(raw)} chars): {raw[:200]}")
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        print(f"[metadata:{caller}] JSON parse FAILED: {e}")
+        data = {}
+    entries = data.get("entries") or []
+    print(f"[metadata:{caller}] parsed {len(entries)} entries")
+    return data
+
+
 def handle_open_modal(ack, body, client, private_metadata=""):
-    """
-    Handle opening the promo generation modal.
-    
-    Args:
-        ack: Slack acknowledgement function
-        body: Request body from Slack
-        client: Slack client
-        private_metadata: Optional metadata to attach to the modal
-    """
+    """Handle opening the promo generation modal."""
     requester_user_id = get_requester_user_id(body)
     if not is_authorized_slack_user(requester_user_id):
-        # Slash commands can be answered without opening a modal
         if body.get("command"):
             ack(unauthorized_text(requester_user_id))
             return
-
-        # Global shortcuts don't have a channel context → show a modal instead
         ack()
         try:
             client.views_open(trigger_id=body["trigger_id"], view=build_access_denied_modal())
@@ -57,148 +102,52 @@ def handle_open_modal(ack, body, client, private_metadata=""):
 
 
 def handle_override_choice_change(ack, body, client):
-    """Update the promo form modal when override choice changes."""
+    """Legacy handler — no-op with the new 5-row form."""
     ack()
-
-    view = body.get("view") or {}
-    vals = (view.get("state") or {}).get("values") or {}
-
-    users_raw = (((vals.get("users_text") or {}).get("value") or {}).get("value") or "").strip()
-    prefix_val = (
-        (((vals.get("prefix") or {}).get("value") or {}).get("selected_option") or {}).get("value")
-        or DEFAULT_PREFIX
-    )
-    duration_val = (
-        (((vals.get("duration_block") or {}).get("duration") or {}).get("selected_option") or {}).get("value")
-        or (((vals.get("duration") or {}).get("value") or {}).get("selected_option") or {}).get("value")
-        or DEFAULT_DURATION
-    )
-    custom_prefix_raw = (((vals.get("custom_prefix") or {}).get("value") or {}).get("value") or "").strip()
-    notes_raw = (((vals.get("notes") or {}).get("value") or {}).get("value") or "").strip()
-
-    custom_days_raw = (
-        (((vals.get("custom_days_block") or {}).get("custom_days") or {}).get("value") or "")
-        or (((vals.get("custom_days") or {}).get("value") or {}).get("value") or "")
-    ).strip()
-    till_date_raw = (
-        (((vals.get("till_date_block") or {}).get("till_date") or {}).get("selected_date") or "")
-        or (((vals.get("till_date") or {}).get("value") or {}).get("selected_date") or "")
-    ).strip()
-
-    updated_view = build_promo_form_modal(
-        users_raw=users_raw,
-        prefix=prefix_val,
-        custom_prefix=custom_prefix_raw,
-        duration=duration_val,
-        custom_days=custom_days_raw,
-        till_date=till_date_raw,
-        notes=notes_raw,
-    )
-
-    # Preserve private_metadata (e.g. channel routing from /generate-promo)
-    pm = (view.get("private_metadata") or "").strip()
-    if pm:
-        updated_view["private_metadata"] = pm
-
-    try:
-        client.views_update(view_id=view["id"], hash=view.get("hash"), view=updated_view)
-    except Exception as e:
-        print(f"[handle_override_choice_change] views_update failed: {e}")
 
 
 def handle_promo_submit(ack, body, client, view):
-    """
-    Handle promo generation form submission and show confirmation modal.
-    
-    Args:
-        ack: Slack acknowledgement function
-        body: Request body from Slack
-        client: Slack client
-        view: The submitted view
-    """
+    """Handle promo generation form submission and show status/confirmation modal."""
     requester_user_id = get_requester_user_id(body)
     if not is_authorized_slack_user(requester_user_id):
         ack({"response_action": "update", "view": build_access_denied_modal()})
         return
 
     vals = view["state"]["values"]
-    
-    # Extract and validate users input
-    _users_block = vals.get("users_text") or {}
-    _users_action = _users_block.get("value") or {}
-    raw = _users_action.get("value") or ""
-    
-    # Check for line breaks without commas (common mistake)
-    if ("\n" in raw or "\r" in raw) and "," not in raw:
+
+    # Parse entries from the 5 rows
+    entries = _read_entries_from_form(vals)
+
+    if not entries:
         ack({
             "response_action": "errors",
-            "errors": {"users_text": "Use commas to separate entries. Line breaks are not separators."}
+            "errors": {"user_1": "Enter at least one user to generate promo codes."},
         })
         return
 
-    ids = parse_user_ids(raw)
-
-    # Validate user IDs
-    if not ids:
-        ack({
-            "response_action": "errors",
-            "errors": {"users_text": "Enter at least one email or phone. Separate with commas only."}
-        })
-        return
-        
-    invalid = [x for x in ids if not validate_user_id(x)]
-    if invalid:
-        ack({
-            "response_action": "errors",
-            "errors": {"users_text": f"These look invalid: {', '.join(invalid[:5])}"}
-        })
-        return
-
-    # Read all three duration inputs — priority: End date → Day count → Dropdown
-    # .get() for block IDs guards against stale modals opened by a prior process
-    till_date_raw = (vals.get("till_date_block", {}).get("till_date", {}).get("selected_date") or "").strip()
-    custom_days_raw = (vals.get("custom_days_block", {}).get("custom_days", {}).get("value") or "").strip()
-    duration_choice = vals.get("duration_block", {}).get("duration", {}).get("selected_option", {}).get("value") or DEFAULT_DURATION
-
-    duration_source = "preset"
-    duration_display = duration_choice
-    duration = duration_choice
-    till_date_for_display = ""
-
-    if till_date_raw:
-        try:
-            target_date = date.fromisoformat(till_date_raw)
-        except ValueError:
+    # Validate each entry's user ID
+    for i, entry in enumerate(entries):
+        if not validate_user_id(entry["user_id"]):
+            n = _find_row_number(vals, entry["user_id"])
             ack({
                 "response_action": "errors",
-                "errors": {"till_date_block": "Invalid date."}
+                "errors": {
+                    f"user_{n}": f"Invalid user ID: {entry['user_id']}. Must be email or phone.",
+                },
             })
             return
 
-        delta_days = (target_date - date.today()).days
-        if delta_days <= 0:
+    # Validate Mixpanel fields — warn if URL couldn't yield a device ID
+    for entry in entries:
+        if entry["mixpanel_raw"] and not entry["device_id"]:
+            n = _find_row_number(vals, entry["user_id"])
             ack({
                 "response_action": "errors",
-                "errors": {"till_date_block": "End date must be in the future."}
+                "errors": {
+                    f"mixpanel_{n}": "Could not extract device ID from this URL. Check the format.",
+                },
             })
             return
-
-        duration_source = "end_date"
-        duration = f"{delta_days}D"
-        till_date_for_display = till_date_raw
-        duration_display = f"Until {till_date_raw} ({delta_days} days from today)"
-    elif custom_days_raw:
-        if not re.fullmatch(r"\d+", custom_days_raw) or int(custom_days_raw) <= 0:
-            ack({
-                "response_action": "errors",
-                "errors": {"custom_days_block": "Must be a positive whole number (e.g., 45)."}
-            })
-            return
-
-        days = int(custom_days_raw)
-        duration_source = "custom_days"
-        duration = f"{days}D"
-        duration_display = f"{days} days (custom override)"
 
     # Validate notes (mandatory)
     _notes_block = vals.get("notes") or {}
@@ -207,183 +156,208 @@ def handle_promo_submit(ack, body, client, view):
     if not notes_raw:
         ack({
             "response_action": "errors",
-            "errors": {"notes": "Please provide the reason for these promo codes."}
+            "errors": {"notes": "Please provide the reason for these promo codes."},
         })
         return
 
-    # Extract selected values
-    selected_prefix_opt = (vals.get("prefix", {}).get("value", {}).get("selected_option") or {})
-    selected_partner_opt = (vals.get("partner", {}).get("value", {}).get("selected_option") or {})
-
-    partner = selected_partner_opt.get("value", DEFAULT_PARTNER)
-
-    # Only carry till_date forward when it actually won
-    till_date_raw = till_date_for_display
-
-    # Compute prefix: custom_prefix overrides dropdown if present
-    prefix_choice = selected_prefix_opt.get("value", DEFAULT_PREFIX)
-    _cp_block = vals.get("custom_prefix") or {}
-    _cp_action = _cp_block.get("value") or {}
-    custom_prefix_raw = (_cp_action.get("value") or "").strip()
-    prefix = custom_prefix_raw or prefix_choice
+    partner = DEFAULT_PARTNER
 
     # Determine target channel for results
-    post_channel_block = vals.get("post_channel") or {}
-    post_channel_action = post_channel_block.get("value") or {}
-    post_channel_id = (post_channel_action.get("selected_conversation") or "").strip()
-    target_for_results = post_channel_id or (view.get("private_metadata") or "").strip()
+    target_for_results = (view.get("private_metadata") or "").strip()
     target_display = f"<#{target_for_results}>" if target_for_results else "DM"
 
-    # Extension prefixes: show existing promo history before confirmation
-    if prefix in EXTENSION_PREFIXES:
-        try:
-            promo_records = fetch_promos_for_users(ids)
-        except Exception as e:
-            promo_records = []
-            print(f"[handle_promo_submit] fetch_promos_for_users failed: {e}")
+    # Strip mixpanel_raw from entries for metadata (not needed downstream)
+    clean_entries = [
+        {
+            "user_id": e["user_id"],
+            "device_id": e["device_id"],
+            "prefix": e["prefix"],
+            "duration": e["duration"],
+        }
+        for e in entries
+    ]
+    print(f"[handle_promo_submit] {len(clean_entries)} clean entries: {clean_entries}")
 
+    # Fetch existing promo records for all users
+    user_ids = [e["user_id"] for e in entries]
+    try:
+        promo_records = fetch_promos_for_users(user_ids)
+    except Exception as e:
+        promo_records = []
+        print(f"[handle_promo_submit] fetch_promos_for_users failed: {e}")
+
+    # Extension prefixes: show extension history if any entry uses one
+    has_extension = any(e["prefix"] in EXTENSION_PREFIXES for e in entries)
+
+    if has_extension:
         history_view = build_extension_history_modal(
-            ids=ids,
-            prefix=prefix,
-            duration=duration,
+            entries=clean_entries,
             partner=partner,
             notes=notes_raw,
             target_display=target_display,
             target_for_results=target_for_results,
             promo_records=promo_records,
-            till_date=till_date_raw,
         )
-        # Preserve the resolved duration display/source for the final confirmation step
-        try:
-            meta = json.loads(history_view.get("private_metadata") or "{}")
-        except Exception:
-            meta = {}
-        meta["duration_display"] = duration_display
-        meta["duration_source"] = duration_source
-        history_view["private_metadata"] = json.dumps(meta)
-
         ack({"response_action": "push", "view": history_view})
         return
 
-    # Normal flow: fetch user status from DB and show preview
-    try:
-        promo_records = fetch_promos_for_users(ids)
-    except Exception as e:
-        promo_records = []
-        print(f"[handle_promo_submit] fetch_promos_for_users failed: {e}")
-
+    # Normal flow: user status preview
     status_view = build_user_status_modal(
-        ids=ids,
-        prefix=prefix,
-        duration=duration,
+        entries=clean_entries,
         partner=partner,
         notes=notes_raw,
         target_display=target_display,
         target_for_results=target_for_results,
         promo_records=promo_records,
-        duration_display=duration_display,
-        till_date=till_date_raw,
     )
-
     ack({"response_action": "push", "view": status_view})
 
 
+def _find_row_number(vals: dict, user_id: str) -> int:
+    """Find which entry row contains the given user_id."""
+    for n in range(1, NUM_ENTRY_ROWS + 1):
+        raw = (
+            ((vals.get(f"user_{n}") or {}).get("value") or {}).get("value") or ""
+        ).strip()
+        if raw and user_id in raw.lower():
+            return n
+    return 1
+
+
 def handle_promo_confirm(ack, body, client, view):
-    """
-    Handle confirmation and generate promo codes.
-    
-    Args:
-        ack: Slack acknowledgement function
-        body: Request body from Slack
-        client: Slack client
-        view: The confirmation view
-    """
+    """Handle confirmation and generate promo codes."""
     requester_user_id = get_requester_user_id(body)
     if not is_authorized_slack_user(requester_user_id):
         ack({"response_action": "update", "view": build_access_denied_modal()})
         return
 
-    # Close the entire modal stack
     ack({"response_action": "clear"})
 
-    # Extract metadata
-    try:
-        meta_json = view.get("private_metadata") or "{}"
-        data = json.loads(meta_json)
-    except Exception:
-        data = {}
-
-    ids = data.get("ids") or []
-    if isinstance(ids, str):
-        ids = [s for s in re.split(r"\s*,\s*", ids) if s]
-
-    prefix = data.get("prefix", DEFAULT_PREFIX)
-    duration = data.get("duration", DEFAULT_DURATION)
+    data = _read_entries_from_metadata(view, caller="handle_promo_confirm")
+    entries = data.get("entries") or []
     partner = data.get("partner", DEFAULT_PARTNER)
     notes = data.get("notes", "")
-
-    # Determine target for results
     target = data.get("target") or None
+
+    if not entries:
+        print(f"[handle_promo_confirm] WARNING: entries is empty! Full metadata: {data}")
+        # DM the requester so they see the issue immediately
+        try:
+            dm = client.conversations_open(users=requester_user_id)
+            client.chat_postMessage(
+                channel=dm["channel"]["id"],
+                text=(
+                    "⚠️ *Promo generation failed — no entries found in metadata.*\n"
+                    "This usually means another bot instance (e.g. Railway) handled the submission "
+                    "instead of this one. Stop the Railway deployment and retry.\n"
+                    f"Debug: metadata keys = {list(data.keys())}"
+                ),
+            )
+        except Exception:
+            pass
+        return
+
     if not target:
         dm = client.conversations_open(users=requester_user_id)
         target = dm["channel"]["id"]
 
-    # Fetch existing records for smart generation logic (runs for ALL prefixes)
+    # Fetch existing records for smart generation logic
+    user_ids = [e["user_id"] for e in entries]
     try:
-        all_promo_records = fetch_promos_for_users(ids)
+        all_promo_records = fetch_promos_for_users(user_ids)
     except Exception as e:
         print(f"[handle_promo_confirm] fetch_promos_for_users failed: {e}")
         all_promo_records = []
 
-    # Generate promo codes with smart logic
-    rows, errors = [], 0
-    for uid in ids:
+    # Generate promo codes per entry
+    rows = []
+    errors = 0
+    for entry in entries:
+        uid = entry["user_id"]
+        prefix = entry.get("prefix", DEFAULT_PREFIX)
+        duration = entry.get("duration", DEFAULT_DURATION)
+        device_id = entry.get("device_id")
+
         try:
             user_records = [
                 r for r in all_promo_records
                 if r.get("promoCodeUser", "").lower() == uid.lower()
             ]
-            till_date = data.get("till_date", "")
-            action = resolve_generation_action(
-                uid, user_records, duration, requested_end_date=till_date
-            )
+            action = resolve_generation_action(uid, user_records, duration)
 
             if action["action"] == "bump_device_count":
                 record = action["record"]
                 new_limit = (record.get("promoCodeDeviceCountLimit") or 1) + 1
-                update_promo_object(record["objectId"], {
+                updates = {
                     "promoCodeDeviceCountLimit": new_limit,
                     "promoCodeUsed": False,
-                })
+                }
+                if device_id:
+                    updates["promoCodeUsedDevices"] = {
+                        "__op": "AddUnique",
+                        "objects": [device_id],
+                    }
+                update_promo_object(record["objectId"], updates)
                 reason = action.get("reason", "")
                 code = record.get("promoCodeId", "?")
-                rows.append((
-                    uid,
-                    f"UPDATED {code} (devices: {new_limit}, reason: {reason})",
-                    duration,
-                    partner,
-                ))
+                rows.append({
+                    "user_id": uid,
+                    "result": f"UPDATED {code} (devices: {new_limit}, reason: {reason})",
+                    "prefix": prefix,
+                    "duration": duration,
+                    "partner": partner,
+                    "device_id": device_id,
+                })
 
             elif action["action"] == "skip":
                 detail = action.get("detail", "limit reached")
-                rows.append((uid, f"SKIPPED: {detail}", duration, partner))
+                rows.append({
+                    "user_id": uid,
+                    "result": f"SKIPPED: {detail}",
+                    "prefix": prefix,
+                    "duration": duration,
+                    "partner": partner,
+                    "device_id": device_id,
+                })
 
             else:
-                promo_id = create_promo_for_user(uid, prefix, duration, partner)
-                rows.append((uid, promo_id, duration, partner))
+                # Create new promo code
+                promo_id = create_promo_for_user(
+                    uid, prefix, duration, partner, device_id=device_id,
+                )
+
+                # If device_id provided and there's a pre-existing promo,
+                # also add device to it and bump its limit
+                if device_id and user_records:
+                    _attach_device_to_existing(user_records, device_id)
+
+                rows.append({
+                    "user_id": uid,
+                    "result": f"CREATED {promo_id} (reason: {duration})",
+                    "prefix": prefix,
+                    "duration": duration,
+                    "partner": partner,
+                    "device_id": device_id,
+                })
 
         except Exception as e:
-            rows.append((uid, f"ERROR: {e}", duration, partner))
+            rows.append({
+                "user_id": uid,
+                "result": f"ERROR: {e}",
+                "prefix": prefix,
+                "duration": duration,
+                "partner": partner,
+                "device_id": device_id,
+            })
             errors += 1
 
     # Format and post results
-    message = format_results_message(prefix, duration, partner, notes, ids, rows, errors)
-    
+    message = format_results_message(notes, entries, rows, errors)
+
     try:
         client.chat_postMessage(channel=target, text=message)
     except Exception as e:
         print(f"[results] chat_postMessage failed for {target}: {e}")
-        # Fallback to DM
         try:
             dm = client.conversations_open(users=requester_user_id)
             dm_channel = dm["channel"]["id"]
@@ -391,15 +365,11 @@ def handle_promo_confirm(ack, body, client, view):
         except Exception as e2:
             print(f"[results] DM fallback failed: {e2}")
 
-    # Send notification to configured channel if set
     notify_channel(
         client=client,
-        notify_channel=PROMO_NOTIFY_CHANNEL,
+        notify_channel_id=PROMO_NOTIFY_CHANNEL,
         target=target,
-        prefix=prefix,
-        duration=duration,
-        partner=partner,
-        processed_count=len(ids),
+        processed_count=len(entries),
         errors=errors,
         requester_user_id=requester_user_id,
         notes=notes,
@@ -407,87 +377,68 @@ def handle_promo_confirm(ack, body, client, view):
     )
 
 
+def _attach_device_to_existing(user_records: list, device_id: str):
+    """Attach a device ID to the most recent existing promo and bump its limit."""
+    if not user_records or not device_id:
+        return
+    # Pick the most recent record (already sorted by -createdAt from API)
+    record = user_records[0]
+    new_limit = (record.get("promoCodeDeviceCountLimit") or 1) + 1
+    try:
+        update_promo_object(record["objectId"], {
+            "promoCodeDeviceCountLimit": new_limit,
+            "promoCodeUsedDevices": {
+                "__op": "AddUnique",
+                "objects": [device_id],
+            },
+        })
+    except Exception as e:
+        print(f"[_attach_device_to_existing] failed for {record.get('promoCodeId')}: {e}")
+
+
 def handle_extension_proceed(ack, body, client, view):
-    """
-    Handle 'Proceed to Generate' from the extension history review modal.
-    Pushes the standard confirmation modal onto the stack.
-    """
+    """Handle 'Proceed to Generate' from the extension history review modal."""
     requester_user_id = get_requester_user_id(body)
     if not is_authorized_slack_user(requester_user_id):
         ack({"response_action": "update", "view": build_access_denied_modal()})
         return
 
-    try:
-        data = json.loads(view.get("private_metadata") or "{}")
-    except Exception:
-        data = {}
-
-    ids = data.get("ids", [])
-    if isinstance(ids, str):
-        ids = [s for s in re.split(r"\s*,\s*", ids) if s]
-
-    prefix = data.get("prefix", DEFAULT_PREFIX)
-    duration = data.get("duration", DEFAULT_DURATION)
+    data = _read_entries_from_metadata(view, caller="handle_extension_proceed")
+    entries = data.get("entries", [])
     partner = data.get("partner", DEFAULT_PARTNER)
     notes = data.get("notes", "")
     target = data.get("target", "")
-    till_date = data.get("till_date", "")
-    duration_display = data.get("duration_display", "")
     target_display = f"<#{target}>" if target else "DM"
 
     confirm_view = build_confirmation_modal(
-        ids=ids,
-        prefix=prefix,
-        duration=duration,
+        entries=entries,
         partner=partner,
         notes=notes,
         target_display=target_display,
         target_for_results=target,
-        duration_display=duration_display,
-        till_date=till_date,
     )
-
     ack({"response_action": "push", "view": confirm_view})
 
 
 def handle_user_status_proceed(ack, body, client, view):
-    """
-    Handle 'Proceed to Confirm' from the user status preview modal.
-    Pushes the standard confirmation modal onto the stack.
-    """
+    """Handle 'Proceed to Confirm' from the user status preview modal."""
     requester_user_id = get_requester_user_id(body)
     if not is_authorized_slack_user(requester_user_id):
         ack({"response_action": "update", "view": build_access_denied_modal()})
         return
 
-    try:
-        data = json.loads(view.get("private_metadata") or "{}")
-    except Exception:
-        data = {}
-
-    ids = data.get("ids", [])
-    if isinstance(ids, str):
-        ids = [s for s in re.split(r"\s*,\s*", ids) if s]
-
-    prefix = data.get("prefix", DEFAULT_PREFIX)
-    duration = data.get("duration", DEFAULT_DURATION)
+    data = _read_entries_from_metadata(view, caller="handle_user_status_proceed")
+    entries = data.get("entries", [])
     partner = data.get("partner", DEFAULT_PARTNER)
     notes = data.get("notes", "")
     target = data.get("target", "")
-    till_date = data.get("till_date", "")
-    duration_display = data.get("duration_display", "")
     target_display = f"<#{target}>" if target else "DM"
 
     confirm_view = build_confirmation_modal(
-        ids=ids,
-        prefix=prefix,
-        duration=duration,
+        entries=entries,
         partner=partner,
         notes=notes,
         target_display=target_display,
         target_for_results=target,
-        duration_display=duration_display,
-        till_date=till_date,
     )
-
     ack({"response_action": "push", "view": confirm_view})
