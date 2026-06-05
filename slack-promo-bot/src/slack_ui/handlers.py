@@ -1,5 +1,6 @@
 """Slack event handlers for the promo bot."""
 import json
+from datetime import date
 from src.config import (
     DEFAULT_PREFIX, DEFAULT_DURATION, DEFAULT_PARTNER,
     PROMO_NOTIFY_CHANNEL, EXTENSION_PREFIXES,
@@ -46,6 +47,22 @@ def _read_entries_from_form(vals: dict) -> list[dict]:
             ((vals.get(f"duration_{n}") or {}).get("value") or {}).get("selected_option") or {}
         ).get("value", DEFAULT_DURATION)
 
+        # End date override — datepicker returns selected_date (YYYY-MM-DD)
+        till_date_raw = (
+            ((vals.get(f"till_date_{n}") or {}).get("value") or {}).get("selected_date") or ""
+        ).strip()
+
+        till_date = ""
+        if till_date_raw:
+            till_date = till_date_raw
+            # Convert end date to XD duration
+            try:
+                delta_days = (date.fromisoformat(till_date_raw) - date.today()).days
+                if delta_days > 0:
+                    duration_val = f"{delta_days}D"
+            except ValueError:
+                pass
+
         # Normalize user ID
         ids = parse_user_ids(user_raw)
         user_id = ids[0] if ids else user_raw.strip().lower()
@@ -59,6 +76,7 @@ def _read_entries_from_form(vals: dict) -> list[dict]:
             "device_id": device_id,
             "prefix": prefix_val,
             "duration": duration_val,
+            "till_date": till_date,
         })
     return entries
 
@@ -149,6 +167,21 @@ def handle_promo_submit(ack, body, client, view):
             })
             return
 
+    # Validate end dates — must be in the future
+    for entry in entries:
+        if entry.get("till_date"):
+            try:
+                delta = (date.fromisoformat(entry["till_date"]) - date.today()).days
+                if delta <= 0:
+                    n = _find_row_number(vals, entry["user_id"])
+                    ack({
+                        "response_action": "errors",
+                        "errors": {f"till_date_{n}": "End date must be in the future."},
+                    })
+                    return
+            except ValueError:
+                pass
+
     # Validate notes (mandatory)
     _notes_block = vals.get("notes") or {}
     _notes_action = _notes_block.get("value") or {}
@@ -173,6 +206,7 @@ def handle_promo_submit(ack, body, client, view):
             "device_id": e["device_id"],
             "prefix": e["prefix"],
             "duration": e["duration"],
+            "till_date": e.get("till_date", ""),
         }
         for e in entries
     ]
@@ -277,13 +311,16 @@ def handle_promo_confirm(ack, body, client, view):
         prefix = entry.get("prefix", DEFAULT_PREFIX)
         duration = entry.get("duration", DEFAULT_DURATION)
         device_id = entry.get("device_id")
+        till_date = entry.get("till_date", "")
 
         try:
             user_records = [
                 r for r in all_promo_records
                 if r.get("promoCodeUser", "").lower() == uid.lower()
             ]
-            action = resolve_generation_action(uid, user_records, duration)
+            action = resolve_generation_action(
+                uid, user_records, duration, requested_end_date=till_date,
+            )
 
             if action["action"] == "bump_device_count":
                 record = action["record"]
@@ -307,6 +344,7 @@ def handle_promo_confirm(ack, body, client, view):
                     "duration": duration,
                     "partner": partner,
                     "device_id": device_id,
+                    "till_date": till_date,
                 })
 
             elif action["action"] == "skip":
@@ -318,6 +356,7 @@ def handle_promo_confirm(ack, body, client, view):
                     "duration": duration,
                     "partner": partner,
                     "device_id": device_id,
+                    "till_date": till_date,
                 })
 
             else:
@@ -338,6 +377,7 @@ def handle_promo_confirm(ack, body, client, view):
                     "duration": duration,
                     "partner": partner,
                     "device_id": device_id,
+                    "till_date": till_date,
                 })
 
         except Exception as e:
@@ -348,6 +388,7 @@ def handle_promo_confirm(ack, body, client, view):
                 "duration": duration,
                 "partner": partner,
                 "device_id": device_id,
+                "till_date": till_date,
             })
             errors += 1
 

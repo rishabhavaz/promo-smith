@@ -1,5 +1,6 @@
 """Slack notification helpers."""
 import re
+from datetime import datetime
 from src.config import ENABLE_CONVERSATIONS_JOIN
 
 
@@ -40,6 +41,13 @@ def notify_channel(client, notify_channel_id: str, target: str,
     for row in (rows or []):
         p = row.get("prefix", "")
         d = row.get("duration", "")
+        td = row.get("till_date", "")
+        if td:
+            try:
+                till_fmt = datetime.strptime(td, "%Y-%m-%d").strftime("%b %d, %Y")
+                d = f"{d} (till {till_fmt})"
+            except ValueError:
+                pass
         if p and p not in prefixes:
             prefixes.append(p)
         if d and d not in durations:
@@ -116,6 +124,13 @@ def format_results_message(notes: str, entries: list, rows: list, errors: int) -
     for row in (rows or []):
         p = row.get("prefix", "")
         d = row.get("duration", "")
+        td = row.get("till_date", "")
+        if td:
+            try:
+                till_fmt = datetime.strptime(td, "%Y-%m-%d").strftime("%b %d, %Y")
+                d = f"{d} (till {till_fmt})"
+            except ValueError:
+                pass
         if p and p not in prefixes:
             prefixes.append(p)
         if d and d not in durations:

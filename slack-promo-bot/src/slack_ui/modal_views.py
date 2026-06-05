@@ -70,7 +70,8 @@ DURATION_OPTIONS = [
 ]
 
 
-def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=""):
+def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration="",
+                        till_date=""):
     """Build Slack blocks for a single entry row (1-indexed)."""
     user_el = {
         "type": "plain_text_input",
@@ -90,10 +91,18 @@ def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=
     if mixpanel:
         mixpanel_el["initial_value"] = mixpanel
 
+    till_date_el = {
+        "type": "datepicker",
+        "action_id": "value",
+        "placeholder": {"type": "plain_text", "text": "Optional end date"},
+    }
+    if (till_date or "").strip():
+        till_date_el["initial_date"] = till_date.strip()
+
     blocks = [
         {
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"*— Entry {n} —*"}],
+            "elements": [{"type": "mrkdwn", "text": f"━━━━━━━━━━━━━━  *ENTRY {n}*  ━━━━━━━━━━━━━━"}],
         },
         {
             "type": "input",
@@ -112,7 +121,6 @@ def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=
         {
             "type": "input",
             "block_id": f"prefix_{n}",
-            "optional": True,
             "label": {"type": "plain_text", "text": "Prefix"},
             "element": {
                 "type": "static_select",
@@ -124,7 +132,6 @@ def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=
         {
             "type": "input",
             "block_id": f"duration_{n}",
-            "optional": True,
             "label": {"type": "plain_text", "text": "Duration"},
             "element": {
                 "type": "static_select",
@@ -132,6 +139,13 @@ def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=
                 "initial_option": _pick_initial_option(DURATION_OPTIONS, duration, DEFAULT_DURATION),
                 "options": DURATION_OPTIONS,
             },
+        },
+        {
+            "type": "input",
+            "block_id": f"till_date_{n}",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "End Date (overrides Duration if set)"},
+            "element": till_date_el,
         },
     ]
     return blocks
@@ -147,7 +161,23 @@ def build_promo_form_modal(*, entries=None, notes=""):
     """
     entries = entries or []
 
+    # Notes at top for quick single-entry use
+    notes_el = {
+        "type": "plain_text_input",
+        "action_id": "value",
+        "multiline": True,
+        "placeholder": {"type": "plain_text", "text": "Why are you creating these promo codes?"},
+    }
+    if (notes or "").strip():
+        notes_el["initial_value"] = notes
+
     blocks = [
+        {
+            "type": "input",
+            "block_id": "notes",
+            "label": {"type": "plain_text", "text": "Notes (reason for promo)"},
+            "element": notes_el,
+        },
         {
             "type": "context",
             "elements": [
@@ -170,27 +200,10 @@ def build_promo_form_modal(*, entries=None, notes=""):
             mixpanel=e.get("mixpanel", ""),
             prefix=e.get("prefix", ""),
             duration=e.get("duration", ""),
+            till_date=e.get("till_date", ""),
         ))
         if n < NUM_ENTRY_ROWS:
             blocks.append({"type": "divider"})
-
-    # Shared notes field
-    notes_el = {
-        "type": "plain_text_input",
-        "action_id": "value",
-        "multiline": True,
-        "placeholder": {"type": "plain_text", "text": "Why are you creating these promo codes?"},
-    }
-    if (notes or "").strip():
-        notes_el["initial_value"] = notes
-
-    blocks.append({"type": "divider"})
-    blocks.append({
-        "type": "input",
-        "block_id": "notes",
-        "label": {"type": "plain_text", "text": "Notes (reason for promo)"},
-        "element": notes_el,
-    })
 
     return {
         "type": "modal",
@@ -215,7 +228,14 @@ def build_confirmation_modal(entries: list, partner: str, notes: str,
     """
     entry_lines = []
     for i, e in enumerate(entries, 1):
-        line = f"{i}. `{e['user_id']}` · `{e['prefix']}` · {e['duration']}"
+        dur_text = e["duration"]
+        if e.get("till_date"):
+            try:
+                till_fmt = datetime.strptime(e["till_date"], "%Y-%m-%d").strftime("%b %d, %Y")
+                dur_text = f"{e['duration']} (till {till_fmt})"
+            except ValueError:
+                pass
+        line = f"{i}. `{e['user_id']}` · `{e['prefix']}` · {dur_text}"
         if e.get("device_id"):
             did = e["device_id"]
             short = did if len(did) <= 16 else did[:12] + "…"
@@ -327,7 +347,14 @@ def build_user_status_modal(
         records = by_user.get(uid.lower(), [])
 
         # Entry settings line
-        settings = f"Prefix: `{entry['prefix']}` · Duration: `{entry['duration']}`"
+        dur_text = f"`{entry['duration']}`"
+        if entry.get("till_date"):
+            try:
+                till_fmt = datetime.strptime(entry["till_date"], "%Y-%m-%d").strftime("%b %d, %Y")
+                dur_text = f"`{entry['duration']}` (till {till_fmt})"
+            except ValueError:
+                pass
+        settings = f"Prefix: `{entry['prefix']}` · Duration: {dur_text}"
         if entry.get("device_id"):
             did = entry["device_id"]
             short = did if len(did) <= 16 else did[:12] + "…"
@@ -449,7 +476,14 @@ def build_extension_history_modal(entries: list, partner: str, notes: str,
         uid = entry["user_id"]
         records = by_user.get(uid.lower(), [])
 
-        settings = f"Prefix: `{entry['prefix']}` · Duration: `{entry['duration']}`"
+        dur_text = f"`{entry['duration']}`"
+        if entry.get("till_date"):
+            try:
+                till_fmt = datetime.strptime(entry["till_date"], "%Y-%m-%d").strftime("%b %d, %Y")
+                dur_text = f"`{entry['duration']}` (till {till_fmt})"
+            except ValueError:
+                pass
+        settings = f"Prefix: `{entry['prefix']}` · Duration: {dur_text}"
         if entry.get("device_id"):
             did = entry["device_id"]
             short = did if len(did) <= 16 else did[:12] + "…"
