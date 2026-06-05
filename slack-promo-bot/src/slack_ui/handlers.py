@@ -372,7 +372,7 @@ def handle_promo_confirm(ack, body, client, view):
 
                 rows.append({
                     "user_id": uid,
-                    "result": f"CREATED {promo_id} (reason: {duration})",
+                    "result": f"CREATED {promo_id} (duration: {duration})",
                     "prefix": prefix,
                     "duration": duration,
                     "partner": partner,
