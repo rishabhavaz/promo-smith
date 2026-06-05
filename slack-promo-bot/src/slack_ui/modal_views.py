@@ -227,6 +227,7 @@ def build_confirmation_modal(entries: list, partner: str, notes: str,
         target_for_results: Actual channel/DM ID for results.
     """
     entry_lines = []
+    has_any_device = any(e.get("device_id") for e in entries)
     for i, e in enumerate(entries, 1):
         dur_text = e["duration"]
         if e.get("till_date"):
@@ -235,11 +236,9 @@ def build_confirmation_modal(entries: list, partner: str, notes: str,
                 dur_text = f"{e['duration']} (till {till_fmt})"
             except ValueError:
                 pass
-        line = f"{i}. `{e['user_id']}` · `{e['prefix']}` · {dur_text}"
+        line = f"{i}. `{e['user_id']}`  ·  `{e['prefix']}`  ·  {dur_text}"
         if e.get("device_id"):
-            did = e["device_id"]
-            short = did if len(did) <= 16 else did[:12] + "…"
-            line += f" · 📱 `{short}`"
+            line += f"\n    📱 `{e['device_id']}`"
         entry_lines.append(line)
 
     meta = {
@@ -252,9 +251,26 @@ def build_confirmation_modal(entries: list, partner: str, notes: str,
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "⚠️ Review Before Confirming", "emoji": True},
+            "text": {"type": "plain_text", "text": "Review Before Confirming", "emoji": True},
         },
         {"type": "divider"},
+    ]
+
+    if has_any_device:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "⚠️ *Device ID Verification*\n"
+                    "Verify each device ID is correct — promo codes will be "
+                    "permanently linked to these devices."
+                ),
+            },
+        })
+        blocks.append({"type": "divider"})
+
+    blocks.extend([
         {
             "type": "section",
             "text": {"type": "mrkdwn", "text": f"*{len(entries)} entry/entries to generate*"},
@@ -277,17 +293,18 @@ def build_confirmation_modal(entries: list, partner: str, notes: str,
             "text": {"type": "mrkdwn", "text": f"*Reason for Generation*\n{notes}"},
         },
         {"type": "divider"},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    "✅ Press *Confirm & Generate* to create these promo codes\n"
-                    "❌ Press *Cancel* to go back and make changes"
-                ),
-            },
+    ])
+
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": (
+                "✅ Press *Confirm & Generate* to create these promo codes\n"
+                "❌ Press *Cancel* to go back and make changes"
+            ),
         },
-    ]
+    })
 
     return {
         "type": "modal",
@@ -309,11 +326,7 @@ def build_user_status_modal(
     target_for_results: str,
     promo_records: list,
 ) -> dict:
-    """Build a modal showing each user's existing subscription status before confirmation.
-
-    Entries are displayed per-user with promo details, expiry status, used/unused
-    flag, device usage, and the settings chosen for this entry.
-    """
+    """Build a modal showing each user's existing subscription status before confirmation."""
     by_user = defaultdict(list)
     for rec in promo_records:
         by_user[rec.get("promoCodeUser", "").lower()].append(rec)
@@ -321,11 +334,12 @@ def build_user_status_modal(
     ids = [e["user_id"] for e in entries]
     new_count = sum(1 for uid in ids if uid.lower() not in by_user)
     existing_count = len(ids) - new_count
+    has_any_device = any(e.get("device_id") for e in entries)
 
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "🔍 User Status Preview", "emoji": True},
+            "text": {"type": "plain_text", "text": "User Status Preview", "emoji": True},
         },
         {
             "type": "context",
@@ -333,8 +347,8 @@ def build_user_status_modal(
                 {
                     "type": "mrkdwn",
                     "text": (
-                        f"{len(ids)} user(s) entered — "
-                        f"🟢 {new_count} new · 🟡 {existing_count} already in database"
+                        f"{len(ids)} user(s) entered  ·  "
+                        f"🟢 {new_count} new  ·  🟡 {existing_count} existing"
                     ),
                 }
             ],
@@ -342,38 +356,58 @@ def build_user_status_modal(
         {"type": "divider"},
     ]
 
+    # Device ID verification notice at top
+    if has_any_device:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "⚠️ *Device ID Verification*\n"
+                    "Please double-check that each device ID below is correct. "
+                    "Once generated, promo codes will be permanently linked to "
+                    "these devices and cannot be reassigned."
+                ),
+            },
+        })
+        blocks.append({"type": "divider"})
+
     for entry in entries:
         uid = entry["user_id"]
         records = by_user.get(uid.lower(), [])
 
-        # Entry settings line
-        dur_text = f"`{entry['duration']}`"
+        # Duration display
+        dur_text = entry["duration"]
         if entry.get("till_date"):
             try:
                 till_fmt = datetime.strptime(entry["till_date"], "%Y-%m-%d").strftime("%b %d, %Y")
-                dur_text = f"`{entry['duration']}` (till {till_fmt})"
+                dur_text = f"{entry['duration']} (till {till_fmt})"
             except ValueError:
                 pass
-        settings = f"Prefix: `{entry['prefix']}` · Duration: {dur_text}"
-        if entry.get("device_id"):
-            did = entry["device_id"]
-            short = did if len(did) <= 16 else did[:12] + "…"
-            settings += f" · 📱 `{short}`"
 
+        # User heading
         if not records:
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        f"🟢 *`{uid}`* — _New user, no existing promos_\n"
-                        f"→ {settings}"
-                    ),
-                },
-            })
+            heading = f"🟢  *{uid}*\n_New user — no existing promos_"
         else:
-            lines = [f"🟡 *`{uid}`* — {len(records)} existing promo(s)"]
-            lines.append(f"→ {settings}")
+            heading = f"🟡  *{uid}*\n_{len(records)} existing promo(s)_"
+
+        # Request settings — device ID on its own line for full visibility
+        lines = [
+            heading,
+            "",
+            f"▸ *Prefix:*  `{entry['prefix']}`  ·  *Duration:*  `{dur_text}`",
+        ]
+        if entry.get("device_id"):
+            lines.append(f"📱  *Device:*  `{entry['device_id']}`")
+
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+        })
+
+        # Existing promo history (context block — smaller text for less clutter)
+        if records:
+            promo_lines = []
             for rec in records[:5]:
                 code = rec.get("promoCodeId", "?")
                 dur = rec.get("promoCodeDuration", "?")
@@ -391,39 +425,36 @@ def build_user_status_modal(
                     created_fmt = "?"
 
                 expiry = _expiry_text(created, dur)
-                used_text = "✅ Used" if used else "⬜ Unused"
-                device_text = f"Devices: {len(devices)}/{device_limit}"
+                used_icon = "✅" if used else "⬜"
 
-                lines.append(
-                    f"  • `{code}` · {dur} · {rec_partner} · Created {created_fmt}"
-                    f"\n    {expiry} · {used_text} · {device_text}"
+                promo_lines.append(
+                    f"› `{code}` · {dur} · {rec_partner} · {created_fmt}\n"
+                    f"   {expiry} · {used_icon} · Devices: {len(devices)}/{device_limit}"
                 )
+
             if len(records) > 5:
-                lines.append(f"  _...and {len(records) - 5} more_")
+                promo_lines.append(f"_…and {len(records) - 5} more_")
+
             blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "\n".join(promo_lines)}],
             })
+
         blocks.append({"type": "divider"})
 
     blocks.append({
         "type": "context",
-        "elements": [
-            {
-                "type": "mrkdwn",
-                "text": (
-                    "Review the users above, then press "
-                    "*Proceed to Confirm* to continue or *Cancel* to go back."
-                ),
-            }
-        ],
+        "elements": [{
+            "type": "mrkdwn",
+            "text": "Press *Proceed to Confirm* to continue or *Cancel* to go back.",
+        }],
     })
 
     if len(blocks) > 48:
         blocks = blocks[:47]
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"_...truncated. {len(entries)} entries total._"},
+            "text": {"type": "mrkdwn", "text": f"_…truncated. {len(entries)} entries total._"},
         })
 
     meta = {
@@ -472,22 +503,39 @@ def build_extension_history_modal(entries: list, partner: str, notes: str,
         {"type": "divider"},
     ]
 
+    has_any_device = any(e.get("device_id") for e in entries)
+
+    if has_any_device:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "⚠️ *Device ID Verification*\n"
+                    "Verify each device ID is correct — promo codes will be "
+                    "permanently linked to these devices."
+                ),
+            },
+        })
+        blocks.append({"type": "divider"})
+
     for entry in entries:
         uid = entry["user_id"]
         records = by_user.get(uid.lower(), [])
 
-        dur_text = f"`{entry['duration']}`"
+        dur_text = entry["duration"]
         if entry.get("till_date"):
             try:
                 till_fmt = datetime.strptime(entry["till_date"], "%Y-%m-%d").strftime("%b %d, %Y")
-                dur_text = f"`{entry['duration']}` (till {till_fmt})"
+                dur_text = f"{entry['duration']} (till {till_fmt})"
             except ValueError:
                 pass
-        settings = f"Prefix: `{entry['prefix']}` · Duration: {dur_text}"
+
+        # Request settings — device ID on its own line
+        settings_lines = [f"▸ *Prefix:*  `{entry['prefix']}`  ·  *Duration:*  `{dur_text}`"]
         if entry.get("device_id"):
-            did = entry["device_id"]
-            short = did if len(did) <= 16 else did[:12] + "…"
-            settings += f" · 📱 `{short}`"
+            settings_lines.append(f"📱  *Device:*  `{entry['device_id']}`")
+        settings_block = "\n".join(settings_lines)
 
         if not records:
             blocks.append({
@@ -495,14 +543,23 @@ def build_extension_history_modal(entries: list, partner: str, notes: str,
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        f"*`{uid}`*\n_No existing promos found — new user_\n"
-                        f"→ {settings}"
+                        f"🟢  *{uid}*\n_No existing promos — new user_\n\n"
+                        f"{settings_block}"
                     ),
                 },
             })
         else:
-            lines = [f"*`{uid}`* — {len(records)} existing promo(s)"]
-            lines.append(f"→ {settings}")
+            lines = [f"🟡  *{uid}*\n_{len(records)} existing promo(s)_"]
+            lines.append("")
+            lines.append(settings_block)
+
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+            })
+
+            # Existing promo history in context block
+            promo_lines = []
             for rec in records[:5]:
                 code = rec.get("promoCodeId", "?")
                 dur = rec.get("promoCodeDuration", "?")
@@ -514,30 +571,29 @@ def build_extension_history_modal(entries: list, partner: str, notes: str,
                 except (ValueError, TypeError):
                     created_fmt = "?"
                 expiry = _expiry_text(created, dur)
-                lines.append(f"  • `{code}` · {dur} · Created {created_fmt} · {expiry}")
+                promo_lines.append(f"› `{code}` · {dur} · {created_fmt}\n   {expiry}")
             if len(records) > 5:
-                lines.append(f"  _...and {len(records) - 5} more_")
+                promo_lines.append(f"_…and {len(records) - 5} more_")
             blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "\n".join(promo_lines)}],
             })
+
         blocks.append({"type": "divider"})
 
     if len(blocks) > 48:
         blocks = blocks[:47]
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"_...truncated. {len(entries)} entries total._"},
+            "text": {"type": "mrkdwn", "text": f"_…truncated. {len(entries)} entries total._"},
         })
 
     blocks.append({
         "type": "context",
-        "elements": [
-            {
-                "type": "mrkdwn",
-                "text": "Press *Proceed to Generate* to create extension codes, or *Cancel* to go back.",
-            }
-        ],
+        "elements": [{
+            "type": "mrkdwn",
+            "text": "Press *Proceed to Generate* to create extension codes, or *Cancel* to go back.",
+        }],
     })
 
     meta = {

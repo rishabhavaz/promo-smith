@@ -43,6 +43,25 @@ def validate_user_id(user_id: str) -> bool:
     return EMAIL_RX.match(user_id) is not None or PHONE_RX.match(user_id) is not None
 
 
+def _strip_package_prefix(distinct_id: str) -> str:
+    """Strip a dot-separated package name prefix from a Mixpanel distinct_id.
+
+    Examples:
+        com.avazapp.international.lite-a772969c704b6c9f  →  a772969c704b6c9f
+        com.avazapp.autism.en.AvazSubscription-D8465185-F82C-4A0D-83FD-B2CC4C3631E6
+            →  D8465185-F82C-4A0D-83FD-B2CC4C3631E6
+    """
+    if "-" not in distinct_id:
+        return distinct_id
+    # Find the first hyphen; if the text before it looks like a package name
+    # (contains dots), treat everything after as the device ID.
+    first_hyphen = distinct_id.index("-")
+    prefix = distinct_id[:first_hyphen]
+    if "." in prefix:
+        return distinct_id[first_hyphen + 1:]
+    return distinct_id
+
+
 def extract_device_id(raw: str) -> str | None:
     """Extract a device ID from a Mixpanel URL or return a raw device ID string.
 
@@ -69,7 +88,7 @@ def extract_device_id(raw: str) -> str | None:
             if "=" in part:
                 k, v = part.split("=", 1)
                 if k in ("distinct_id", "$device_id", "id"):
-                    return v
+                    return _strip_package_prefix(v)
         # Fragment might be like "user-ABC"
         if frag.startswith("user-"):
             return frag[5:]
@@ -78,7 +97,7 @@ def extract_device_id(raw: str) -> str | None:
     query_params = parse_qs(parsed.query)
     for key in ("distinct_id", "$device_id", "id"):
         if key in query_params:
-            return query_params[key][0]
+            return _strip_package_prefix(query_params[key][0])
 
     # Last resort: return the last non-empty path segment
     segments = [s for s in parsed.path.rstrip("/").split("/") if s]
