@@ -2,7 +2,11 @@
 
 
 def duration_to_days(duration_str: str) -> int | None:
-    """Convert a promo duration string to number of days. Returns None for LIFETIME."""
+    """Convert a promo duration string to number of days. Returns None for LIFETIME.
+
+    Accepts "{n}D", "{n}M", "{n}Y" for any positive integer n, plus "LIFETIME".
+    Months are approximated as 30 days, years as 365 days.
+    """
     if not duration_str or duration_str.upper() == "LIFETIME":
         return None
     d = duration_str.upper().strip()
@@ -11,10 +15,16 @@ def duration_to_days(duration_str: str) -> int | None:
             return int(d[:-1])
         except ValueError:
             return None
-    if d == "6M":
-        return 180
-    if d == "1Y":
-        return 365
+    if d.endswith("M"):
+        try:
+            return int(d[:-1]) * 30
+        except ValueError:
+            return None
+    if d.endswith("Y"):
+        try:
+            return int(d[:-1]) * 365
+        except ValueError:
+            return None
     try:
         return int(d)
     except ValueError:

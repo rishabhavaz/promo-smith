@@ -43,9 +43,26 @@ def _read_entries_from_form(vals: dict) -> list[dict]:
             ((vals.get(f"prefix_{n}") or {}).get("value") or {}).get("selected_option") or {}
         ).get("value", DEFAULT_PREFIX)
 
-        duration_val = (
-            ((vals.get(f"duration_{n}") or {}).get("value") or {}).get("selected_option") or {}
-        ).get("value", DEFAULT_DURATION)
+        # Duration: read unit dropdown + amount number input, combine into canonical string
+        dur_unit = (
+            ((vals.get(f"dur_unit_{n}") or {}).get("value") or {}).get("selected_option") or {}
+        ).get("value", "LIFETIME")
+
+        dur_amount_raw = (
+            ((vals.get(f"dur_amount_{n}") or {}).get("value") or {}).get("value") or ""
+        ).strip()
+
+        if dur_unit == "LIFETIME":
+            duration_val = "LIFETIME"
+        else:
+            try:
+                amount = int(dur_amount_raw)
+                if amount >= 1:
+                    duration_val = f"{amount}{dur_unit}"
+                else:
+                    duration_val = ""  # caught by validation
+            except (ValueError, TypeError):
+                duration_val = ""  # caught by validation
 
         # End date override — datepicker returns selected_date (YYYY-MM-DD)
         till_date_raw = (
@@ -181,6 +198,18 @@ def handle_promo_submit(ack, body, client, view):
                     return
             except ValueError:
                 pass
+
+    # Validate duration — non-Lifetime unit requires a valid amount
+    for entry in entries:
+        if not entry["duration"]:
+            n = _find_row_number(vals, entry["user_id"])
+            ack({
+                "response_action": "errors",
+                "errors": {
+                    f"dur_amount_{n}": "Enter a whole number, or choose Lifetime.",
+                },
+            })
+            return
 
     # Validate notes (mandatory)
     _notes_block = vals.get("notes") or {}

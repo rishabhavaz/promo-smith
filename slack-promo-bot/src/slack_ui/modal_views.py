@@ -60,14 +60,33 @@ PREFIX_OPTIONS = [
     _mk_plain_option("AVZ-STR1M-"),
 ]
 
-DURATION_OPTIONS = [
-    _mk_plain_option("LIFETIME"),
-    _mk_plain_option("30D"),
-    _mk_plain_option("60D"),
-    _mk_plain_option("90D"),
-    _mk_plain_option("6M"),
-    _mk_plain_option("1Y"),
+DURATION_UNIT_OPTIONS = [
+    {"text": {"type": "plain_text", "text": "Lifetime"}, "value": "LIFETIME"},
+    {"text": {"type": "plain_text", "text": "Days"}, "value": "D"},
+    {"text": {"type": "plain_text", "text": "Months"}, "value": "M"},
+    {"text": {"type": "plain_text", "text": "Years"}, "value": "Y"},
 ]
+
+
+def _parse_duration(duration: str) -> tuple[str, str]:
+    """Split a canonical duration string into (amount_str, unit_value) for form pre-fill.
+
+    "LIFETIME" or "" -> ("", "LIFETIME")
+    "30D"            -> ("30", "D")
+    "6M"             -> ("6", "M")
+    "1Y"             -> ("1", "Y")
+    """
+    if not duration or duration.upper() == "LIFETIME":
+        return ("", "LIFETIME")
+    d = duration.upper().strip()
+    for suffix in ("D", "M", "Y"):
+        if d.endswith(suffix):
+            try:
+                int(d[:-1])
+                return (d[:-1], suffix)
+            except ValueError:
+                return ("", "LIFETIME")
+    return ("", "LIFETIME")
 
 
 def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration="",
@@ -98,6 +117,19 @@ def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=
     }
     if (till_date or "").strip():
         till_date_el["initial_date"] = till_date.strip()
+
+    # Split canonical duration into amount + unit for the two form fields
+    amount_str, unit_val = _parse_duration(duration)
+
+    dur_amount_el = {
+        "type": "number_input",
+        "action_id": "value",
+        "is_decimal_allowed": False,
+        "min_value": "1",
+        "placeholder": {"type": "plain_text", "text": "e.g. 30 (ignored for Lifetime)"},
+    }
+    if amount_str:
+        dur_amount_el["initial_value"] = amount_str
 
     blocks = [
         {
@@ -131,13 +163,22 @@ def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=
         },
         {
             "type": "input",
-            "block_id": f"duration_{n}",
-            "label": {"type": "plain_text", "text": "Duration"},
+            "block_id": f"dur_amount_{n}",
+            "label": {"type": "plain_text", "text": "Duration Amount"},
+            "hint": {"type": "plain_text", "text": "Ignored when unit is Lifetime"},
+            "element": dur_amount_el,
+        },
+        {
+            "type": "input",
+            "block_id": f"dur_unit_{n}",
+            "label": {"type": "plain_text", "text": "Duration Unit"},
             "element": {
                 "type": "static_select",
                 "action_id": "value",
-                "initial_option": _pick_initial_option(DURATION_OPTIONS, duration, DEFAULT_DURATION),
-                "options": DURATION_OPTIONS,
+                "initial_option": _pick_initial_option(
+                    DURATION_UNIT_OPTIONS, unit_val, "LIFETIME",
+                ),
+                "options": DURATION_UNIT_OPTIONS,
             },
         },
         {
