@@ -199,9 +199,9 @@ def handle_promo_submit(ack, body, client, view):
             except ValueError:
                 pass
 
-    # Validate duration — non-Lifetime unit requires a valid amount
+    # Validate duration — non-Lifetime unit requires a valid amount (unless end date is set)
     for entry in entries:
-        if not entry["duration"]:
+        if not entry["duration"] and not entry.get("till_date"):
             n = _find_row_number(vals, entry["user_id"])
             ack({
                 "response_action": "errors",

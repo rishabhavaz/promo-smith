@@ -164,8 +164,9 @@ def _build_entry_blocks(n: int, *, user_id="", mixpanel="", prefix="", duration=
         {
             "type": "input",
             "block_id": f"dur_amount_{n}",
+            "optional": True,
             "label": {"type": "plain_text", "text": "Duration Amount"},
-            "hint": {"type": "plain_text", "text": "Ignored when unit is Lifetime"},
+            "hint": {"type": "plain_text", "text": "Ignored when unit is Lifetime or End Date is set"},
             "element": dur_amount_el,
         },
         {
